@@ -3,13 +3,16 @@ import mongoose from "mongoose";
 const leadSchema = new mongoose.Schema(
 {
     name: String,
+
+    website: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
+
     address: String,
     phone: String,
-   website: {
- type: String,
- unique: true,
- sparse: true
-},
+
     rating: Number,
     reviews: Number,
 
@@ -18,12 +21,16 @@ const leadSchema = new mongoose.Schema(
     emailGuess: String,
 
     score: Number,
+
     leadQuality: {
         type: String,
         enum: ["High", "Medium", "Low"]
     }
+
 },
 { timestamps: true }
 );
 
-export default mongoose.model("Lead", leadSchema);
+const Lead = mongoose.model("Lead", leadSchema);
+
+export default Lead;
