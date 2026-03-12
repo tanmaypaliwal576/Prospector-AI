@@ -1,12 +1,17 @@
 import { Worker } from "bullmq";
 import { redisConnection } from "../redis/redis.connection.js";
+import { enrichmentQueue } from "../queues/enrichment.queue.js";
+
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+
 import Lead from "../models/Lead.js";
 
 dotenv.config();
+
 puppeteer.use(StealthPlugin());
 
 console.log("Starting Worker...");
@@ -60,6 +65,7 @@ mongoose.connect(process.env.MONGO_URI)
         });
 
         await new Promise(r => setTimeout(r, 2000));
+
       }
 
       console.log("Scrolling finished");
@@ -107,10 +113,12 @@ mongoose.connect(process.env.MONGO_URI)
           ).catch(() => null);
 
           if (!website) {
+
             website = await businessPage.$eval(
               'a[aria-label^="Website"]',
               el => el.href
             ).catch(() => null);
+
           }
 
           const lead = {
@@ -131,9 +139,10 @@ mongoose.connect(process.env.MONGO_URI)
         }
 
         await businessPage.close();
+
       }
 
-      /* SAVE TO DATABASE SAFELY */
+      /* SAVE TO DATABASE + TRIGGER ENRICHMENT */
 
       for (const lead of leads) {
 
@@ -144,6 +153,16 @@ mongoose.connect(process.env.MONGO_URI)
             { $set: lead },
             { upsert: true }
           );
+
+          /* PUSH TO ENRICHMENT QUEUE */
+
+         if (!lead.website.startsWith("no-website")) {
+
+  await enrichmentQueue.add("enrichLead", {
+    website: lead.website
+  });
+
+}
 
         } else {
 
@@ -170,14 +189,19 @@ mongoose.connect(process.env.MONGO_URI)
       connection: redisConnection,
       concurrency: 2
     }
+
   );
 
   worker.on("completed", job => {
+
     console.log(`Job ${job.id} completed`);
+
   });
 
   worker.on("failed", (job, err) => {
+
     console.log(`Job ${job.id} failed`, err);
+
   });
 
 })
