@@ -7,6 +7,9 @@ const app = express();
 app.use(express.json());
 
 
+app.get("/",(req,res)=>{
+    res.send("Hey from backend")
+})
 app.use("/api/leads", leadRoutes);
 
 connectDB();
