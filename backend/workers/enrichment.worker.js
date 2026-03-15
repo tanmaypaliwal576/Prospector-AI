@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 
 import Lead from "../models/Lead.js";
 import { extractWebsiteText } from "../utils/website.extractor.js";
+import { analyzeBusiness } from "../services/gemini.service.js";
 
 dotenv.config();
 
@@ -12,7 +13,7 @@ mongoose.connect(process.env.MONGO_URI)
 .then(() => {
 
 console.log("Enrichment Worker Started");
-
+console.log(process.env.GEMINI_API_KEY);
 new Worker(
 
 "enrichmentQueue",
@@ -32,6 +33,19 @@ async (job) => {
         return;
     }
 
+    /* Skip social media */
+
+    if (
+      website.includes("instagram.com") ||
+      website.includes("linkedin.com") ||
+      website.includes("facebook.com")
+    ) {
+      console.log("Skipping social site:", website);
+      return;
+    }
+
+    /* Extract website content */
+
     const text = await extractWebsiteText(website);
 
     if (!text) {
@@ -41,30 +55,16 @@ async (job) => {
 
     console.log("Website text length:", text.length);
 
-    /* SIMPLE HEURISTIC ANALYSIS (temporary before AI) */
+    /* Gemini AI */
 
-    let businessType = "Medical Clinic";
+    const aiData = await analyzeBusiness(text);
 
-    const services = [];
-
-    if (text.toLowerCase().includes("dental")) {
-        businessType = "Dental Clinic";
-        services.push("Dental Care");
+    if (!aiData) {
+        console.log("AI extraction failed:", website);
+        return;
     }
 
-    if (text.toLowerCase().includes("cardiology")) {
-        services.push("Cardiology");
-    }
-
-    if (text.toLowerCase().includes("skin")) {
-        services.push("Dermatology");
-    }
-
-    if (text.toLowerCase().includes("general physician")) {
-        services.push("General Consultation");
-    }
-
-    /* EMAIL GUESS */
+    /* Email guess */
 
     let emailGuess = null;
 
@@ -80,21 +80,22 @@ async (job) => {
       { website },
       {
         $set: {
-          services,
-          businessType,
+          services: aiData.services,
+          businessType: aiData.businessType,
+          description: aiData.description,
           emailGuess,
           enriched: true
         }
       }
     );
 
-    console.log("Lead enriched:", website);
+    console.log("Lead enriched with Gemini:", website);
 
 },
 
 {
 connection: redisConnection,
-concurrency: 5
+concurrency: 2
 }
 
 );
