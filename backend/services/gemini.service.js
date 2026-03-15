@@ -1,13 +1,23 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const apiKey = process.env.GEMINI_API_KEY;
 
-export const analyzeBusiness = async (text) => {
+if (!apiKey) {
+  console.error("❌ GEMINI_API_KEY not found");
+  process.exit(1);
+}
+
+const genAI = new GoogleGenerativeAI(apiKey);
+
+export const analyzeBusiness = async (text, retries = 2) => {
 
   try {
 
     const model = genAI.getGenerativeModel({
-      model:"gemini-2.5-flash"
+      model: "gemini-2.5-flash"
     });
 
     const prompt = `
@@ -18,35 +28,30 @@ Extract structured information.
 Return ONLY JSON.
 
 Example:
-
 {
  "businessType": "Hotel",
- "services": ["Hotel rooms","Restaurant","Event hosting"],
- "description": "Hotel offering accommodation and dining."
+ "services": ["Hotel rooms","Restaurant"],
+ "description": "Hotel offering accommodation."
 }
 
 Rules:
-- Do not add explanations
-- Do not add markdown
-- Only return JSON
-- If services unclear return []
+- Only JSON
+- No explanations
+- No markdown
 
 Website text:
-${text}
+${text.slice(0,15000)}
 `;
 
     const result = await model.generateContent(prompt);
 
     const response = await result.response;
-
-    let content = response.text();
-
-    /* Extract JSON safely */
+    const content = response.text();
 
     const match = content.match(/\{[\s\S]*\}/);
 
     if (!match) {
-      console.log("Gemini returned invalid format");
+      console.log("Gemini returned invalid JSON");
       return null;
     }
 
@@ -60,10 +65,31 @@ ${text}
 
   } catch (error) {
 
-    console.log("Gemini extraction error:", error.message);
+    const msg = error?.message || "";
+
+    /* DAILY QUOTA REACHED */
+
+    if (msg.includes("Quota exceeded")) {
+
+      console.log("🚫 Gemini daily quota reached. Skipping AI enrichment.");
+
+      return null;
+    }
+
+    /* TEMPORARY RATE LIMIT */
+
+    if (msg.includes("429") && retries > 0) {
+
+      console.log("⚠️ Rate limit hit. Waiting 20 seconds...");
+
+      await new Promise(r => setTimeout(r, 20000));
+
+      return analyzeBusiness(text, retries - 1);
+    }
+
+    console.log("Gemini extraction error:", msg);
 
     return null;
-
   }
 
 };
