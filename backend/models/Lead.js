@@ -16,12 +16,15 @@ const leadSchema = new mongoose.Schema(
     rating: Number,
     reviews: Number,
 
-    /* AI ENRICHMENT FIELDS */
 
-    services: [String],
-    businessType: String,
-    description: String,
-    emailGuess: String,
+/* AI ENRICHMENT FIELDS */
+
+services: [String],
+businessType: String,
+description: String,
+ownerName: String,
+emailGuess: String,
+
 
     /* LEAD SCORING (Week 4) */
 

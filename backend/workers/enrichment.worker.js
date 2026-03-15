@@ -1,101 +1,89 @@
-import { Worker } from "bullmq";
-import { redisConnection } from "../redis/redis.connection.js";
-import mongoose from "mongoose";
 import dotenv from "dotenv";
+dotenv.config();
+
+import { Worker } from "bullmq";
+import mongoose from "mongoose";
+
+import { redisConnection } from "../redis/redis.connection.js";
 
 import Lead from "../models/Lead.js";
 import { extractWebsiteText } from "../utils/website.extractor.js";
 import { analyzeBusiness } from "../services/gemini.service.js";
 
-dotenv.config();
-
 mongoose.connect(process.env.MONGO_URI)
 .then(() => {
 
 console.log("Enrichment Worker Started");
-console.log(process.env.GEMINI_API_KEY);
+
 new Worker(
 
 "enrichmentQueue",
 
 async (job) => {
 
-    const { website } = job.data;
+  const { website } = job.data;
 
-    console.log("Enriching:", website);
+  console.log("Enriching:", website);
 
-    const lead = await Lead.findOne({ website });
+  const lead = await Lead.findOne({ website });
 
-    if (!lead) return;
+  if (!lead) return;
 
-    if (lead.enriched) {
-        console.log("Already enriched:", website);
-        return;
-    }
+  if (lead.enriched) {
+    console.log("Already enriched:", website);
+    return;
+  }
 
-    /* Skip social media */
+  const text = await extractWebsiteText(website);
 
-    if (
-      website.includes("instagram.com") ||
-      website.includes("linkedin.com") ||
-      website.includes("facebook.com")
-    ) {
-      console.log("Skipping social site:", website);
-      return;
-    }
+  if (!text) {
 
-    /* Extract website content */
+    console.log("No website content:", website);
 
-    const text = await extractWebsiteText(website);
+    return;
+  }
 
-    if (!text) {
-        console.log("No website content:", website);
-        return;
-    }
+  console.log("Website text length:", text.length);
 
-    console.log("Website text length:", text.length);
+  const aiData = await analyzeBusiness(text);
 
-    /* Gemini AI */
+  if (!aiData) {
 
-    const aiData = await analyzeBusiness(text);
+    console.log("AI extraction failed:", website);
 
-    if (!aiData) {
-        console.log("AI extraction failed:", website);
-        return;
-    }
+    return;
+  }
 
-    /* Email guess */
+  let emailGuess = null;
 
-    let emailGuess = null;
+  try {
 
-    try {
+    const domain = new URL(website).hostname.replace("www.", "");
 
-      const domain = new URL(website).hostname.replace("www.", "");
+    emailGuess = `info@${domain}`;
 
-      emailGuess = `info@${domain}`;
+  } catch {}
 
-    } catch {}
-
-    await Lead.updateOne(
-      { website },
-      {
-        $set: {
-          services: aiData.services,
-          businessType: aiData.businessType,
-          description: aiData.description,
-          emailGuess,
-          enriched: true
-        }
+  await Lead.updateOne(
+    { website },
+    {
+      $set: {
+        services: aiData.services,
+        businessType: aiData.businessType,
+        description: aiData.description,
+        emailGuess,
+        enriched: true
       }
-    );
+    }
+  );
 
-    console.log("Lead enriched with Gemini:", website);
+  console.log("Lead enriched with Gemini:", website);
 
 },
 
 {
-connection: redisConnection,
-concurrency: 2
+  connection: redisConnection,
+  concurrency: 1
 }
 
 );
