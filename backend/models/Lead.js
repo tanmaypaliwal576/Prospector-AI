@@ -2,45 +2,42 @@ import mongoose from "mongoose";
 
 const leadSchema = new mongoose.Schema(
 {
-    name: String,
+  name: String,
 
-    website: {
-        type: String,
-        unique: true,
-        sparse: true
-    },
+  website: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
 
-    address: String,
-    phone: String,
+  address: String,
+  phone: String,
 
-    rating: Number,
-    reviews: Number,
+  rating: Number,
+  reviews: Number,
 
+  /* AI ENRICHMENT FIELDS */
 
-/* AI ENRICHMENT FIELDS */
+  services: [String],
+  businessType: String,
+  description: String,
+  ownerName: String,
+  emailGuess: String,
 
-services: [String],
-businessType: String,
-description: String,
-ownerName: String,
-emailGuess: String,
+  /* LEAD SCORING */
 
+  leadQuality: {
+    type: String,
+    enum: ["High", "Medium", "Low"],
+    default: "Low"
+  },
 
-    /* LEAD SCORING (Week 4) */
+  /* ENRICHMENT STATUS */
 
-    score: Number,
-
-    leadQuality: {
-        type: String,
-        enum: ["High", "Medium", "Low"]
-    },
-
-    /* ENRICHMENT STATUS */
-
-    enriched: {
-        type: Boolean,
-        default: false
-    }
+  enriched: {
+    type: Boolean,
+    default: false
+  }
 
 },
 { timestamps: true }

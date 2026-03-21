@@ -2,145 +2,86 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import puppeteer from "puppeteer";
 
-const BLOCKED_DOMAINS = [
+const BLOCKED = [
   "instagram.com",
   "linkedin.com",
   "facebook.com",
-  "apollo247.com",
-  "healthplix.com"
+  "makemytrip.com",
+  "booking.com",
+  "tripadvisor.com"
 ];
 
 function shouldSkip(url) {
-  return BLOCKED_DOMAINS.some(domain => url.includes(domain));
+  return BLOCKED.some(d => url.includes(d));
 }
 
-function cleanText(text) {
-  return text
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 5000); // slightly larger context for AI
+function clean(text) {
+  return text.replace(/\s+/g, " ").trim().slice(0, 8000);
 }
 
-/* ---------------- AXIOS FAST EXTRACTION ---------------- */
-
-async function extractAxios(url) {
-
+async function axiosExtract(url) {
   try {
-
     const { data } = await axios.get(url, {
       timeout: 12000,
-      maxRedirects: 5,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        "Accept-Encoding": "gzip,deflate,br"
-      }
+      headers: { "User-Agent": "Mozilla/5.0" }
     });
 
     const $ = cheerio.load(data);
+    $("script, style, noscript").remove();
 
-    $("script,style,noscript,header,footer,svg").remove();
-
-    const text = $("p,h1,h2,h3,h4,li")
-      .map((i, el) => $(el).text())
-      .get()
-      .join(" ");
-
-    return cleanText(text);
-
+    return clean($("body").text());
   } catch {
-
     return null;
-
   }
-
 }
 
-/* ---------------- PUPPETEER FALLBACK ---------------- */
-
-async function extractPuppeteer(url) {
-
+async function puppeteerExtract(url) {
   let browser;
 
   try {
-
     browser = await puppeteer.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled"
-      ]
+      args: ["--no-sandbox"]
     });
 
     const page = await browser.newPage();
 
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-    );
-
     await page.goto(url, {
-      waitUntil: "networkidle2",
-      timeout: 30000
+      waitUntil: "domcontentloaded",
+      timeout: 25000
     });
-
-    /* wait for page JS */
 
     await new Promise(r => setTimeout(r, 3000));
 
     const text = await page.evaluate(() => {
-
-      document
-        .querySelectorAll("script,style,noscript,header,footer,svg")
+      document.querySelectorAll("script,style,noscript")
         .forEach(el => el.remove());
-
-      const elements = document.querySelectorAll(
-        "p,h1,h2,h3,h4,li"
-      );
-
-      return Array.from(elements)
-        .map(el => el.innerText)
-        .join(" ");
-
+      return document.body.innerText;
     });
 
-    return cleanText(text);
+    return clean(text);
 
   } catch {
-
     return null;
-
   } finally {
-
     if (browser) await browser.close();
-
   }
-
 }
 
-/* ---------------- MAIN EXTRACTOR ---------------- */
-
 export const extractWebsiteText = async (url) => {
-
   if (!url || shouldSkip(url)) return null;
 
-  /* try axios first (fast) */
+  let text = await axiosExtract(url);
 
-  let text = await extractAxios(url);
-
-  if (!text || text.length < 200) {
-
+  if (!text || text.length < 300) {
     console.log("Fallback to Puppeteer:", url);
-
-    text = await extractPuppeteer(url);
-
+    text = await puppeteerExtract(url);
   }
 
-  if (!text || text.length < 200) {
+  if (!text || text.length < 300) {
     console.log("No usable content:", url);
     return null;
   }
 
   return text;
-
 };

@@ -1,5 +1,6 @@
 import { Worker } from "bullmq";
 import { redisConnection } from "../redis/redis.connection.js";
+
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 
@@ -7,30 +8,25 @@ import Lead from "../models/Lead.js";
 import { extractWebsiteText } from "../utils/website.extractor.js";
 import { lightExtract } from "../utils/light.extractor.js";
 import { analyzeBusiness } from "../services/gemini.service.js";
+import { calculateLeadScore } from "../utils/leadScoring.js";
 
 dotenv.config();
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
 
-    console.log("Enrichment Worker Started");
+    console.log("🚀 Enrichment Worker Started");
 
-    const worker = new Worker(
+    new Worker(
       "enrichmentQueue",
 
       async (job) => {
-
         const { website } = job.data;
 
         console.log("Enriching:", website);
 
         const lead = await Lead.findOne({ website });
-        if (!lead) return;
-
-        if (lead.enriched) {
-          console.log("Already enriched:", website);
-          return;
-        }
+        if (!lead || lead.enriched) return;
 
         if (
           website.includes("instagram.com") ||
@@ -42,11 +38,8 @@ mongoose.connect(process.env.MONGO_URI)
         }
 
         try {
-
-          // LIGHT SCRAPER
           let text = await lightExtract(website);
 
-          // FALLBACK
           if (!text || text.length < 500) {
             console.log("Fallback to Puppeteer:", website);
             text = await extractWebsiteText(website);
@@ -72,34 +65,32 @@ mongoose.connect(process.env.MONGO_URI)
             emailGuess = `info@${domain}`;
           } catch {}
 
+          const leadQuality = calculateLeadScore(
+            { ...aiData, website, phone: lead.phone },
+            text.length
+          );
+
           await Lead.updateOne(
             { website },
             {
               $set: {
-                services: aiData.services || [],
-                businessType: aiData.businessType || null,
-                description: aiData.description || null,
-                ownerName: aiData.ownerName || null,
-                emailPattern: aiData.emailPattern || null,
+                services: aiData.services,
+                businessType: aiData.businessType,
+                description: aiData.description,
+                ownerName: aiData.ownerName,
                 emailGuess,
+                leadQuality,
                 enriched: true
               }
             }
           );
 
-          console.log("✅ Enriched:", website);
+          console.log(`✅ Enriched (${leadQuality}):`, website);
 
         } catch (err) {
-
-          if (err.message === "QUOTA_EXCEEDED") {
-            console.log("🚫 Quota exhausted → retry later:", website);
-            throw err;
-          }
-
-          console.log("Error:", err.message);
+          console.log("❌ Worker Error FULL:", err);
           throw err;
         }
-
       },
 
       {
