@@ -6,9 +6,13 @@ const BLOCKED = [
   "instagram.com",
   "linkedin.com",
   "facebook.com",
-  "makemytrip.com",
   "booking.com",
-  "tripadvisor.com"
+  "makemytrip.com",
+  "tripadvisor.com",
+  "marriott.com",
+  "hyatt.com",
+  "tajhotels.com",
+  "radissonhotels.com"
 ];
 
 function shouldSkip(url) {
@@ -54,8 +58,7 @@ async function puppeteerExtract(url) {
     await new Promise(r => setTimeout(r, 3000));
 
     const text = await page.evaluate(() => {
-      document.querySelectorAll("script,style,noscript")
-        .forEach(el => el.remove());
+      document.querySelectorAll("script,style,noscript").forEach(el => el.remove());
       return document.body.innerText;
     });
 
@@ -74,14 +77,10 @@ export const extractWebsiteText = async (url) => {
   let text = await axiosExtract(url);
 
   if (!text || text.length < 300) {
-    console.log("Fallback to Puppeteer:", url);
     text = await puppeteerExtract(url);
   }
 
-  if (!text || text.length < 300) {
-    console.log("No usable content:", url);
-    return null;
-  }
+  if (!text || text.length < 300) return null;
 
   return text;
 };

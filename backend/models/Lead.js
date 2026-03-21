@@ -16,15 +16,11 @@ const leadSchema = new mongoose.Schema(
   rating: Number,
   reviews: Number,
 
-  /* AI ENRICHMENT FIELDS */
-
   services: [String],
   businessType: String,
   description: String,
   ownerName: String,
   emailGuess: String,
-
-  /* LEAD SCORING */
 
   leadQuality: {
     type: String,
@@ -32,17 +28,19 @@ const leadSchema = new mongoose.Schema(
     default: "Low"
   },
 
-  /* ENRICHMENT STATUS */
-
   enriched: {
     type: Boolean,
     default: false
+  },
+
+  enrichmentStatus: {
+    type: String,
+    enum: ["pending", "processing", "done", "failed"],
+    default: "pending"
   }
 
 },
 { timestamps: true }
 );
 
-const Lead = mongoose.model("Lead", leadSchema);
-
-export default Lead;
+export default mongoose.model("Lead", leadSchema);

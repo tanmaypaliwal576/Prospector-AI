@@ -3,71 +3,60 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-console.log("🔥 USING GEMINI SERVICE v2");
+console.log("🔥 GEMINI SERVICE FINAL");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-export async function analyzeBusiness(text) {
+export async function analyzeBatch(texts) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash"
+    });
 
     const prompt = `
-You are a business analyst.
+Return EXACTLY ${texts.length} objects in JSON ARRAY.
 
-Extract structured business data from the following website content.
+[
+  {
+    "businessType": "",
+    "services": [],
+    "description": "",
+    "ownerName": ""
+  }
+]
 
-Return ONLY valid JSON. No explanation. No markdown.
+STRICT RULES:
+- Array length MUST be ${texts.length}
+- Do NOT skip items
+- Do NOT merge responses
+- No explanation
+- Valid JSON only
 
-Format:
-{
-  "businessType": "",
-  "services": [],
-  "description": "",
-  "ownerName": ""
-}
+Analyze:
 
-Website Content:
-${text.slice(0, 12000)}
+${texts.map((t, i) => `${i + 1}. ${t.slice(0, 3500)}`).join("\n")}
 `;
 
     const result = await model.generateContent(prompt);
-
     const raw = result?.response?.text?.();
 
-    if (!raw) {
-      console.log("❌ Empty Gemini response");
-      return null;
-    }
+    if (!raw) return null;
 
     const clean = raw
       .replace(/```json/g, "")
       .replace(/```/g, "")
       .trim();
 
-    let parsed;
-
-    try {
-      parsed = JSON.parse(clean);
-    } catch (err) {
-      console.log("❌ Invalid JSON from Gemini");
-      console.log("RAW:", raw);
-      return null;
-    }
-
-    return {
-      businessType: parsed.businessType || null,
-      services: Array.isArray(parsed.services) ? parsed.services : [],
-      description: parsed.description || null,
-      ownerName: parsed.ownerName || null
-    };
+    return JSON.parse(clean);
 
   } catch (err) {
-    console.log("❌ Gemini error:", err);
 
     if (err.message?.toLowerCase().includes("quota")) {
       throw new Error("QUOTA_EXCEEDED");
     }
 
+    console.log("❌ Gemini error:", err.message);
     return null;
   }
 }
