@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 import { redisConnection } from "../redis/redis.connection.js";
@@ -8,7 +11,14 @@ if (!process.env.GEMINI_API_KEY) {
   throw new Error("GEMINI_API_KEY missing");
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const apiKey = process.env.GEMINI_API_KEY;
+
+if (!apiKey) {
+  console.error("❌ GEMINI_API_KEY not found");
+  process.exit(1);
+}
+
+const genAI = new GoogleGenerativeAI(apiKey);
 
 const DAILY_LIMIT = 20;
 
@@ -51,7 +61,7 @@ Rules:
 - Strict JSON only
 
 Website text:
-${text}
+${text.slice(0,15000)}
 `;
 
   try {

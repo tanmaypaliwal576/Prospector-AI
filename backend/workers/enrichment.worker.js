@@ -1,13 +1,14 @@
-import { Worker } from "bullmq";
-import { redisConnection } from "../redis/redis.connection.js";
-import mongoose from "mongoose";
 import dotenv from "dotenv";
+dotenv.config();
+
+import { Worker } from "bullmq";
+import mongoose from "mongoose";
+
+import { redisConnection } from "../redis/redis.connection.js";
 
 import Lead from "../models/Lead.js";
 import { extractWebsiteText } from "../utils/website.extractor.js";
 import { analyzeBusiness } from "../services/gemini.service.js";
-
-dotenv.config();
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
@@ -104,7 +105,8 @@ mongoose.connect(process.env.MONGO_URI)
         connection: redisConnection,
         concurrency: 1
       }
-    );
+    }
+  );
 
   })
   .catch(err => console.log("MongoDB error:", err));

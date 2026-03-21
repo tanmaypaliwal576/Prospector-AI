@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { Worker } from "bullmq";
 import { redisConnection } from "../redis/redis.connection.js";
 import { enrichmentQueue } from "../queues/enrichment.queue.js";
@@ -6,15 +9,11 @@ import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
 import mongoose from "mongoose";
-import dotenv from "dotenv";
-
 import Lead from "../models/Lead.js";
-
-dotenv.config();
 
 puppeteer.use(StealthPlugin());
 
-console.log("Starting Worker...");
+console.log("Starting Scraper Worker...");
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
@@ -140,7 +139,7 @@ mongoose.connect(process.env.MONGO_URI)
 
           await businessPage.close();
 
-        }
+      console.log("Lead:", lead);
 
         /* SAVE TO DATABASE + TRIGGER ENRICHMENT */
 
@@ -181,7 +180,17 @@ mongoose.connect(process.env.MONGO_URI)
 
           }
 
-        }
+        await enrichmentQueue.add(
+          "enrichLead",
+          { website: lead.website },
+          {
+            attempts: 3,
+            backoff: {
+              type: "exponential",
+              delay: 30000
+            }
+          }
+        );
 
         console.log("Saved leads:", leads.length);
 
