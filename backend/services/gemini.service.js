@@ -1,78 +1,73 @@
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
+
 dotenv.config();
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { redisConnection } from "../redis/redis.connection.js";
-
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY missing");
-}
+console.log("🔥 USING GEMINI SERVICE v2");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-export const DAILY_LIMIT = 50;
+export async function analyzeBusiness(text) {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-const checkQuota = async () => {
-  const usage = await redisConnection.incr("gemini:daily_usage");
+    const prompt = `
+You are a business analyst.
 
-  if (usage === 1) {
-    await redisConnection.expire("gemini:daily_usage", 86400);
-  }
+Extract structured business data from the following website content.
 
-  if (usage > DAILY_LIMIT) {
-    throw new Error("QUOTA_EXCEEDED");
-  }
+Return ONLY valid JSON. No explanation. No markdown.
 
-  return usage;
-};
-
-export const analyzeBusiness = async (text) => {
-  await checkQuota();
-
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-  });
-
-  const prompt = `
-You analyze a business website.
-
-Return ONLY JSON:
-
+Format:
 {
   "businessType": "",
   "services": [],
   "description": "",
-  "ownerName": "",
-  "emailPattern": ""
+  "ownerName": ""
 }
 
-Rules:
-- Strict JSON only
-- No markdown
-- No explanation
-- If unknown, return null
-
-Website text:
-${text.slice(0, 15000)}
+Website Content:
+${text.slice(0, 12000)}
 `;
 
-  try {
     const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const content = response.text();
 
-    const match = content.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+    const raw = result?.response?.text?.();
 
-    return JSON.parse(match[0]);
+    if (!raw) {
+      console.log("❌ Empty Gemini response");
+      return null;
+    }
 
-  } catch (error) {
+    const clean = raw
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
 
-    if (error.message?.toLowerCase().includes("quota")) {
+    let parsed;
+
+    try {
+      parsed = JSON.parse(clean);
+    } catch (err) {
+      console.log("❌ Invalid JSON from Gemini");
+      console.log("RAW:", raw);
+      return null;
+    }
+
+    return {
+      businessType: parsed.businessType || null,
+      services: Array.isArray(parsed.services) ? parsed.services : [],
+      description: parsed.description || null,
+      ownerName: parsed.ownerName || null
+    };
+
+  } catch (err) {
+    console.log("❌ Gemini error:", err);
+
+    if (err.message?.toLowerCase().includes("quota")) {
       throw new Error("QUOTA_EXCEEDED");
     }
 
-    console.log("Gemini error:", error.message);
     return null;
   }
-};
+}
