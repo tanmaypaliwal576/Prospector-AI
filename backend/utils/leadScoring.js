@@ -1,13 +1,19 @@
-export const calculateLeadScore = (lead, textLength = 0) => {
+export function calculateLeadScore(data, textLength) {
+
   let score = 0;
 
-  if (lead.website && !lead.website.startsWith("no-website")) score += 2;
-  if (lead.description && lead.description.length > 30) score += 2;
-  if (lead.services && lead.services.length > 1) score += 2;
-  if (lead.phone) score += 1;
-  if (textLength > 1000) score += 1;
+  if (data.phone) score += 2;
+  if (data.emailGuess) score += 2;
 
-  if (score >= 5) return "High";
+  if (data.services && data.services.length >= 3) score += 2;
+  if (data.description && data.description.length > 80) score += 1;
+
+  if (textLength > 5000) score += 2;
+  else if (textLength > 2500) score += 1;
+
+  if (!data.services || data.services.length === 0) score -= 1;
+
+  if (score >= 6) return "High";
   if (score >= 3) return "Medium";
   return "Low";
-};
+}
