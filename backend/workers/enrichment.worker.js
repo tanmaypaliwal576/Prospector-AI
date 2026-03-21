@@ -11,82 +11,102 @@ import { extractWebsiteText } from "../utils/website.extractor.js";
 import { analyzeBusiness } from "../services/gemini.service.js";
 
 mongoose.connect(process.env.MONGO_URI)
-.then(() => {
+  .then(() => {
 
-console.log("Enrichment Worker Started");
+    console.log("Enrichment Worker Started");
 
-new Worker(
+    const worker = new Worker(
+      "enrichmentQueue",
 
-"enrichmentQueue",
+      async (job) => {
 
-async (job) => {
+        const { website } = job.data;
 
-  const { website } = job.data;
+        console.log("Enriching:", website);
 
-  console.log("Enriching:", website);
+        const lead = await Lead.findOne({ website });
+        if (!lead) return;
 
-  const lead = await Lead.findOne({ website });
+        // ✅ Skip already enriched
+        if (lead.enriched) {
+          console.log("Already enriched:", website);
+          return;
+        }
 
-  if (!lead) return;
+        // ✅ Skip social domains
+        if (
+          website.includes("instagram.com") ||
+          website.includes("linkedin.com") ||
+          website.includes("facebook.com")
+        ) {
+          console.log("Skipping social:", website);
+          return;
+        }
 
-  if (lead.enriched) {
-    console.log("Already enriched:", website);
-    return;
-  }
+        try {
 
-  const text = await extractWebsiteText(website);
+          /* Extract content */
+          const text = await extractWebsiteText(website);
 
-  if (!text) {
+          if (!text || text.length < 500) {
+            console.log("Low quality site, skipping:", website);
+            return;
+          }
 
-    console.log("No website content:", website);
+          console.log("Text length:", text.length);
 
-    return;
-  }
+          /* AI enrichment */
+          const aiData = await analyzeBusiness(text);
 
-  console.log("Website text length:", text.length);
+          if (!aiData) {
+            console.log("AI failed:", website);
+            return;
+          }
 
-  const aiData = await analyzeBusiness(text);
+          /* Email guess */
+          let emailGuess = null;
+          try {
+            const domain = new URL(website).hostname.replace("www.", "");
+            emailGuess = `info@${domain}`;
+          } catch { }
 
-  if (!aiData) {
+          await Lead.updateOne(
+            { website },
+            {
+              $set: {
+                services: aiData.services,
+                businessType: aiData.businessType,
+                description: aiData.description,
+                emailGuess,
+                enriched: true
+              }
+            }
+          );
 
-    console.log("AI extraction failed:", website);
+          console.log("✅ Enriched:", website);
 
-    return;
-  }
+        } catch (err) {
 
-  let emailGuess = null;
+          if (err.message === "QUOTA_EXCEEDED") {
 
-  try {
+            console.log("🚫 Quota exhausted. Delaying job 24h:", website);
 
-    const domain = new URL(website).hostname.replace("www.", "");
+            await job.moveToDelayed(Date.now() + 24 * 60 * 60 * 1000);
 
-    emailGuess = `info@${domain}`;
+            return;
+          }
 
-  } catch {}
+          console.log("Error:", err.message);
+        }
 
-  await Lead.updateOne(
-    { website },
-    {
-      $set: {
-        services: aiData.services,
-        businessType: aiData.businessType,
-        description: aiData.description,
-        emailGuess,
-        enriched: true
+      },
+
+      {
+        connection: redisConnection,
+        concurrency: 1
       }
     }
   );
 
-  console.log("Lead enriched with Gemini:", website);
-
-},
-
-{
-  connection: redisConnection,
-  concurrency: 1
-}
-
-);
-
-})
-.catch(err => console.log("MongoDB connection error:", err));
+  })
+  .catch(err => console.log("MongoDB error:", err));

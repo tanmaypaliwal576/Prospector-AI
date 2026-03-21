@@ -2,6 +2,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import dotenv from "dotenv";
+import { redisConnection } from "../redis/redis.connection.js";
+
+dotenv.config();
+
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY missing");
+}
 
 const apiKey = process.env.GEMINI_API_KEY;
 
@@ -12,84 +20,71 @@ if (!apiKey) {
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
-export const analyzeBusiness = async (text, retries = 2) => {
+const DAILY_LIMIT = 20;
 
-  try {
+// 🔒 Central quota guard
+const checkQuota = async () => {
+  const usage = await redisConnection.incr("gemini:daily_usage");
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash"
-    });
+  if (usage === 1) {
+    await redisConnection.expire("gemini:daily_usage", 86400);
+  }
 
-    const prompt = `
+  if (usage > DAILY_LIMIT) {
+    throw new Error("QUOTA_EXCEEDED");
+  }
+
+  return usage;
+};
+
+export const analyzeBusiness = async (text) => {
+  await checkQuota();
+
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+  });
+
+  const prompt = `
 You analyze a business website.
 
-Extract structured information.
+Return ONLY JSON:
 
-Return ONLY JSON.
-
-Example:
 {
- "businessType": "Hotel",
- "services": ["Hotel rooms","Restaurant"],
- "description": "Hotel offering accommodation."
+  "businessType": "",
+  "services": [],
+  "description": ""
 }
 
 Rules:
-- Only JSON
-- No explanations
 - No markdown
+- No explanation
+- Strict JSON only
 
 Website text:
 ${text.slice(0,15000)}
 `;
 
+  try {
     const result = await model.generateContent(prompt);
-
     const response = await result.response;
     const content = response.text();
 
     const match = content.match(/\{[\s\S]*\}/);
+    if (!match) return null;
 
-    if (!match) {
-      console.log("Gemini returned invalid JSON");
-      return null;
-    }
-
-    const json = JSON.parse(match[0]);
-
-    return {
-      businessType: json.businessType || "Business",
-      services: json.services || [],
-      description: json.description || ""
-    };
+    return JSON.parse(match[0]);
 
   } catch (error) {
 
-    const msg = error?.message || "";
+    const isQuotaExceeded =
+      error.message?.includes("quota") ||
+      error.message?.includes("Quota exceeded");
 
-    /* DAILY QUOTA REACHED */
-
-    if (msg.includes("Quota exceeded")) {
-
-      console.log("🚫 Gemini daily quota reached. Skipping AI enrichment.");
-
-      return null;
+    if (isQuotaExceeded) {
+      throw new Error("QUOTA_EXCEEDED");
     }
 
-    /* TEMPORARY RATE LIMIT */
-
-    if (msg.includes("429") && retries > 0) {
-
-      console.log("⚠️ Rate limit hit. Waiting 20 seconds...");
-
-      await new Promise(r => setTimeout(r, 20000));
-
-      return analyzeBusiness(text, retries - 1);
-    }
-
-    console.log("Gemini extraction error:", msg);
-
+    console.log("Gemini error:", error.message);
     return null;
   }
-
 };
