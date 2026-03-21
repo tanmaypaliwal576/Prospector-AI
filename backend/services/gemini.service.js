@@ -10,7 +10,7 @@ if (!process.env.GEMINI_API_KEY) {
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-export const DAILY_LIMIT = 20;
+export const DAILY_LIMIT = 50;
 
 const checkQuota = async () => {
   const usage = await redisConnection.incr("gemini:daily_usage");
