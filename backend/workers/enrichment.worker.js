@@ -10,95 +10,101 @@ import { analyzeBusiness } from "../services/gemini.service.js";
 dotenv.config();
 
 mongoose.connect(process.env.MONGO_URI)
-.then(() => {
+  .then(() => {
 
-console.log("Enrichment Worker Started");
-console.log(process.env.GEMINI_API_KEY);
-new Worker(
+    console.log("Enrichment Worker Started");
 
-"enrichmentQueue",
+    const worker = new Worker(
+      "enrichmentQueue",
 
-async (job) => {
+      async (job) => {
 
-    const { website } = job.data;
+        const { website } = job.data;
 
-    console.log("Enriching:", website);
+        console.log("Enriching:", website);
 
-    const lead = await Lead.findOne({ website });
+        const lead = await Lead.findOne({ website });
+        if (!lead) return;
 
-    if (!lead) return;
-
-    if (lead.enriched) {
-        console.log("Already enriched:", website);
-        return;
-    }
-
-    /* Skip social media */
-
-    if (
-      website.includes("instagram.com") ||
-      website.includes("linkedin.com") ||
-      website.includes("facebook.com")
-    ) {
-      console.log("Skipping social site:", website);
-      return;
-    }
-
-    /* Extract website content */
-
-    const text = await extractWebsiteText(website);
-
-    if (!text) {
-        console.log("No website content:", website);
-        return;
-    }
-
-    console.log("Website text length:", text.length);
-
-    /* Gemini AI */
-
-    const aiData = await analyzeBusiness(text);
-
-    if (!aiData) {
-        console.log("AI extraction failed:", website);
-        return;
-    }
-
-    /* Email guess */
-
-    let emailGuess = null;
-
-    try {
-
-      const domain = new URL(website).hostname.replace("www.", "");
-
-      emailGuess = `info@${domain}`;
-
-    } catch {}
-
-    await Lead.updateOne(
-      { website },
-      {
-        $set: {
-          services: aiData.services,
-          businessType: aiData.businessType,
-          description: aiData.description,
-          emailGuess,
-          enriched: true
+        // ✅ Skip already enriched
+        if (lead.enriched) {
+          console.log("Already enriched:", website);
+          return;
         }
+
+        // ✅ Skip social domains
+        if (
+          website.includes("instagram.com") ||
+          website.includes("linkedin.com") ||
+          website.includes("facebook.com")
+        ) {
+          console.log("Skipping social:", website);
+          return;
+        }
+
+        try {
+
+          /* Extract content */
+          const text = await extractWebsiteText(website);
+
+          if (!text || text.length < 500) {
+            console.log("Low quality site, skipping:", website);
+            return;
+          }
+
+          console.log("Text length:", text.length);
+
+          /* AI enrichment */
+          const aiData = await analyzeBusiness(text);
+
+          if (!aiData) {
+            console.log("AI failed:", website);
+            return;
+          }
+
+          /* Email guess */
+          let emailGuess = null;
+          try {
+            const domain = new URL(website).hostname.replace("www.", "");
+            emailGuess = `info@${domain}`;
+          } catch { }
+
+          await Lead.updateOne(
+            { website },
+            {
+              $set: {
+                services: aiData.services,
+                businessType: aiData.businessType,
+                description: aiData.description,
+                emailGuess,
+                enriched: true
+              }
+            }
+          );
+
+          console.log("✅ Enriched:", website);
+
+        } catch (err) {
+
+          if (err.message === "QUOTA_EXCEEDED") {
+
+            console.log("🚫 Quota exhausted. Delaying job 24h:", website);
+
+            await job.moveToDelayed(Date.now() + 24 * 60 * 60 * 1000);
+
+            return;
+          }
+
+          console.log("Error:", err.message);
+        }
+
+      },
+
+      {
+        connection: redisConnection,
+        concurrency: 1
       }
     );
 
-    console.log("Lead enriched with Gemini:", website);
-
-},
-
-{
-connection: redisConnection,
-concurrency: 2
-}
-
-);
-
-})
-.catch(err => console.log("MongoDB connection error:", err));
+  })
+  .catch(err => console.log("MongoDB error:", err));

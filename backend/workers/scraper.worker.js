@@ -17,192 +17,198 @@ puppeteer.use(StealthPlugin());
 console.log("Starting Worker...");
 
 mongoose.connect(process.env.MONGO_URI)
-.then(() => {
+  .then(() => {
 
-  console.log("Worker MongoDB Connected");
+    console.log("Worker MongoDB Connected");
 
-  const worker = new Worker(
-    "scraperQueue",
+    const worker = new Worker(
+      "scraperQueue",
 
-    async (job) => {
+      async (job) => {
 
-      const { query } = job.data;
+        const { query } = job.data;
 
-      console.log("Searching Google Maps for:", query);
+        console.log("Searching Google Maps for:", query);
 
-      const browser = await puppeteer.launch({
-        headless: false,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-blink-features=AutomationControlled"
-        ]
-      });
-
-      const page = await browser.newPage();
-
-      await page.goto(
-        `https://www.google.com/maps/search/${encodeURIComponent(query)}`,
-        { waitUntil: "networkidle2", timeout: 60000 }
-      );
-
-      console.log("Maps loaded");
-
-      await page.waitForSelector("a.hfpxzc", { timeout: 20000 });
-
-      console.log("Business cards detected");
-
-      /* SCROLL RESULTS */
-
-      for (let i = 0; i < 15; i++) {
-
-        await page.evaluate(() => {
-
-          const scrollable = document.querySelector('div[role="feed"]');
-
-          if (scrollable) scrollable.scrollBy(0, 3000);
-
+        const browser = await puppeteer.launch({
+          headless: false,
+          args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-blink-features=AutomationControlled"
+          ]
         });
 
-        await new Promise(r => setTimeout(r, 2000));
+        const page = await browser.newPage();
 
-      }
+        await page.goto(
+          `https://www.google.com/maps/search/${encodeURIComponent(query)}`,
+          { waitUntil: "networkidle2", timeout: 60000 }
+        );
 
-      console.log("Scrolling finished");
+        console.log("Maps loaded");
 
-      const businessLinks = await page.$$eval(
-        "a.hfpxzc",
-        links => links.slice(0, 50).map(el => el.href)
-      );
+        await page.waitForSelector("a.hfpxzc", { timeout: 20000 });
 
-      console.log("Businesses found:", businessLinks.length);
+        console.log("Business cards detected");
 
-      const leads = [];
+        /* SCROLL RESULTS */
 
-      for (const link of businessLinks) {
+        for (let i = 0; i < 15; i++) {
 
-        const businessPage = await browser.newPage();
+          await page.evaluate(() => {
 
-        try {
+            const scrollable = document.querySelector('div[role="feed"]');
 
-          await businessPage.goto(link, {
-            waitUntil: "domcontentloaded",
-            timeout: 30000
+            if (scrollable) scrollable.scrollBy(0, 3000);
+
           });
 
-          await businessPage.waitForSelector("h1", { timeout: 15000 });
+          await new Promise(r => setTimeout(r, 2000));
 
-          const name = await businessPage.$eval(
-            "h1",
-            el => el.innerText
-          );
+        }
 
-          const address = await businessPage.$eval(
-            'button[data-item-id="address"]',
-            el => el.innerText
-          ).catch(() => null);
+        console.log("Scrolling finished");
 
-          const phone = await businessPage.$eval(
-            'button[data-item-id^="phone"]',
-            el => el.innerText
-          ).catch(() => null);
+        const businessLinks = await page.$$eval(
+          "a.hfpxzc",
+          links => links.slice(0, 50).map(el => el.href)
+        );
 
-          let website = await businessPage.$eval(
-            'a[data-item-id="authority"]',
-            el => el.href
-          ).catch(() => null);
+        console.log("Businesses found:", businessLinks.length);
 
-          if (!website) {
+        const leads = [];
 
-            website = await businessPage.$eval(
-              'a[aria-label^="Website"]',
+        for (const link of businessLinks) {
+
+          const businessPage = await browser.newPage();
+
+          try {
+
+            await businessPage.goto(link, {
+              waitUntil: "domcontentloaded",
+              timeout: 30000
+            });
+
+            await businessPage.waitForSelector("h1", { timeout: 15000 });
+
+            const name = await businessPage.$eval(
+              "h1",
+              el => el.innerText
+            );
+
+            const address = await businessPage.$eval(
+              'button[data-item-id="address"]',
+              el => el.innerText
+            ).catch(() => null);
+
+            const phone = await businessPage.$eval(
+              'button[data-item-id^="phone"]',
+              el => el.innerText
+            ).catch(() => null);
+
+            let website = await businessPage.$eval(
+              'a[data-item-id="authority"]',
               el => el.href
             ).catch(() => null);
 
+            if (!website) {
+
+              website = await businessPage.$eval(
+                'a[aria-label^="Website"]',
+                el => el.href
+              ).catch(() => null);
+
+            }
+
+            const lead = {
+              name,
+              address,
+              phone,
+              website
+            };
+
+            leads.push(lead);
+
+            console.log("Lead:", lead);
+
+          } catch (err) {
+
+            console.log("Failed to extract business");
+
           }
 
-          const lead = {
-            name,
-            address,
-            phone,
-            website
-          };
-
-          leads.push(lead);
-
-          console.log("Lead:", lead);
-
-        } catch (err) {
-
-          console.log("Failed to extract business");
+          await businessPage.close();
 
         }
 
-        await businessPage.close();
+        /* SAVE TO DATABASE + TRIGGER ENRICHMENT */
 
-      }
+        for (const lead of leads) {
 
-      /* SAVE TO DATABASE + TRIGGER ENRICHMENT */
+          if (lead.website) {
 
-      for (const lead of leads) {
+            await Lead.updateOne(
+              { website: lead.website },
+              { $set: lead },
+              { upsert: true }
+            );
 
-        if (lead.website) {
+            /* PUSH TO ENRICHMENT QUEUE */
 
-          await Lead.updateOne(
-            { website: lead.website },
-            { $set: lead },
-            { upsert: true }
-          );
+            if (!lead.website.startsWith("no-website")) {
 
-          /* PUSH TO ENRICHMENT QUEUE */
+              const usage = await redisConnection.get("gemini:daily_usage");
 
-         if (!lead.website.startsWith("no-website")) {
+              if (usage && parseInt(usage) >= 20) {
+                console.log("Quota full → skipping enrichment");
+              } else {
+                await enrichmentQueue.add("enrichLead", {
+                  website: lead.website
+                });
+              }
 
-  await enrichmentQueue.add("enrichLead", {
-    website: lead.website
-  });
+            }
 
-}
+          } else {
 
-        } else {
+            const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
 
-          const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
+            await Lead.create({
+              ...lead,
+              website: uniqueKey
+            });
 
-          await Lead.create({
-            ...lead,
-            website: uniqueKey
-          });
+          }
 
         }
 
+        console.log("Saved leads:", leads.length);
+
+        await browser.close();
+
+        return leads;
+
+      },
+
+      {
+        connection: redisConnection,
+        concurrency: 2
       }
 
-      console.log("Saved leads:", leads.length);
+    );
 
-      await browser.close();
+    worker.on("completed", job => {
 
-      return leads;
+      console.log(`Job ${job.id} completed`);
 
-    },
+    });
 
-    {
-      connection: redisConnection,
-      concurrency: 2
-    }
+    worker.on("failed", (job, err) => {
 
-  );
+      console.log(`Job ${job.id} failed`, err);
 
-  worker.on("completed", job => {
+    });
 
-    console.log(`Job ${job.id} completed`);
-
-  });
-
-  worker.on("failed", (job, err) => {
-
-    console.log(`Job ${job.id} failed`, err);
-
-  });
-
-})
-.catch(err => console.log("MongoDB connection error:", err));
+  })
+  .catch(err => console.log("MongoDB connection error:", err));
