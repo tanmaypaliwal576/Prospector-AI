@@ -1,6 +1,3 @@
-import dotenv from "dotenv";
-dotenv.config();
-
 import { Worker } from "bullmq";
 import { redisConnection } from "../redis/redis.connection.js";
 import { enrichmentQueue } from "../queues/enrichment.queue.js";
@@ -9,11 +6,15 @@ import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 
 import mongoose from "mongoose";
+import dotenv from "dotenv";
+
 import Lead from "../models/Lead.js";
+
+dotenv.config();
 
 puppeteer.use(StealthPlugin());
 
-console.log("Starting Scraper Worker...");
+console.log("Starting Worker...");
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
@@ -51,20 +52,14 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log("Business cards detected");
 
-        /* SCROLL RESULTS */
+        /* SCROLL */
 
         for (let i = 0; i < 15; i++) {
-
           await page.evaluate(() => {
-
             const scrollable = document.querySelector('div[role="feed"]');
-
             if (scrollable) scrollable.scrollBy(0, 3000);
-
           });
-
           await new Promise(r => setTimeout(r, 2000));
-
         }
 
         console.log("Scrolling finished");
@@ -91,10 +86,7 @@ mongoose.connect(process.env.MONGO_URI)
 
             await businessPage.waitForSelector("h1", { timeout: 15000 });
 
-            const name = await businessPage.$eval(
-              "h1",
-              el => el.innerText
-            );
+            const name = await businessPage.$eval("h1", el => el.innerText);
 
             const address = await businessPage.$eval(
               'button[data-item-id="address"]',
@@ -112,36 +104,26 @@ mongoose.connect(process.env.MONGO_URI)
             ).catch(() => null);
 
             if (!website) {
-
               website = await businessPage.$eval(
                 'a[aria-label^="Website"]',
                 el => el.href
               ).catch(() => null);
-
             }
 
-            const lead = {
-              name,
-              address,
-              phone,
-              website
-            };
+            const lead = { name, address, phone, website };
 
             leads.push(lead);
 
             console.log("Lead:", lead);
 
-          } catch (err) {
-
+          } catch {
             console.log("Failed to extract business");
-
           }
 
           await businessPage.close();
+        }
 
-      console.log("Lead:", lead);
-
-        /* SAVE TO DATABASE + TRIGGER ENRICHMENT */
+        /* SAVE ALL LEADS */
 
         for (const lead of leads) {
 
@@ -153,22 +135,6 @@ mongoose.connect(process.env.MONGO_URI)
               { upsert: true }
             );
 
-            /* PUSH TO ENRICHMENT QUEUE */
-
-            if (!lead.website.startsWith("no-website")) {
-
-              const usage = await redisConnection.get("gemini:daily_usage");
-
-              if (usage && parseInt(usage) >= 20) {
-                console.log("Quota full → skipping enrichment");
-              } else {
-                await enrichmentQueue.add("enrichLead", {
-                  website: lead.website
-                });
-              }
-
-            }
-
           } else {
 
             const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
@@ -179,20 +145,32 @@ mongoose.connect(process.env.MONGO_URI)
             });
 
           }
-
-        await enrichmentQueue.add(
-          "enrichLead",
-          { website: lead.website },
-          {
-            attempts: 3,
-            backoff: {
-              type: "exponential",
-              delay: 30000
-            }
-          }
-        );
+        }
 
         console.log("Saved leads:", leads.length);
+
+        /* ⭐ LIMIT ENRICHMENT TO TOP 10 */
+
+        const MAX_ENRICH = 10;
+        const topLeads = leads.slice(0, MAX_ENRICH);
+
+        console.log("Enriching only:", topLeads.length);
+
+        for (const lead of topLeads) {
+
+          if (!lead.website) continue;
+
+          if (!lead.website.startsWith("no-website")) {
+
+            await enrichmentQueue.add("enrich", {
+              website: lead.website
+            });
+
+          }
+
+        }
+
+        console.log("Enrichment jobs added:", topLeads.length);
 
         await browser.close();
 
@@ -204,19 +182,14 @@ mongoose.connect(process.env.MONGO_URI)
         connection: redisConnection,
         concurrency: 2
       }
-
     );
 
     worker.on("completed", job => {
-
       console.log(`Job ${job.id} completed`);
-
     });
 
     worker.on("failed", (job, err) => {
-
       console.log(`Job ${job.id} failed`, err);
-
     });
 
   })
