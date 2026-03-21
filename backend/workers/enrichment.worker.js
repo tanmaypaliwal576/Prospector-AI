@@ -1,14 +1,14 @@
-import dotenv from "dotenv";
-dotenv.config();
-
 import { Worker } from "bullmq";
-import mongoose from "mongoose";
-
 import { redisConnection } from "../redis/redis.connection.js";
+import mongoose from "mongoose";
+import dotenv from "dotenv";
 
 import Lead from "../models/Lead.js";
 import { extractWebsiteText } from "../utils/website.extractor.js";
+import { lightExtract } from "../utils/light.extractor.js";
 import { analyzeBusiness } from "../services/gemini.service.js";
+
+dotenv.config();
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
@@ -27,13 +27,11 @@ mongoose.connect(process.env.MONGO_URI)
         const lead = await Lead.findOne({ website });
         if (!lead) return;
 
-        // ✅ Skip already enriched
         if (lead.enriched) {
           console.log("Already enriched:", website);
           return;
         }
 
-        // ✅ Skip social domains
         if (
           website.includes("instagram.com") ||
           website.includes("linkedin.com") ||
@@ -45,17 +43,22 @@ mongoose.connect(process.env.MONGO_URI)
 
         try {
 
-          /* Extract content */
-          const text = await extractWebsiteText(website);
+          // LIGHT SCRAPER
+          let text = await lightExtract(website);
+
+          // FALLBACK
+          if (!text || text.length < 500) {
+            console.log("Fallback to Puppeteer:", website);
+            text = await extractWebsiteText(website);
+          }
 
           if (!text || text.length < 500) {
-            console.log("Low quality site, skipping:", website);
+            console.log("Low quality site:", website);
             return;
           }
 
           console.log("Text length:", text.length);
 
-          /* AI enrichment */
           const aiData = await analyzeBusiness(text);
 
           if (!aiData) {
@@ -63,20 +66,21 @@ mongoose.connect(process.env.MONGO_URI)
             return;
           }
 
-          /* Email guess */
           let emailGuess = null;
           try {
             const domain = new URL(website).hostname.replace("www.", "");
             emailGuess = `info@${domain}`;
-          } catch { }
+          } catch {}
 
           await Lead.updateOne(
             { website },
             {
               $set: {
-                services: aiData.services,
-                businessType: aiData.businessType,
-                description: aiData.description,
+                services: aiData.services || [],
+                businessType: aiData.businessType || null,
+                description: aiData.description || null,
+                ownerName: aiData.ownerName || null,
+                emailPattern: aiData.emailPattern || null,
                 emailGuess,
                 enriched: true
               }
@@ -88,15 +92,12 @@ mongoose.connect(process.env.MONGO_URI)
         } catch (err) {
 
           if (err.message === "QUOTA_EXCEEDED") {
-
-            console.log("🚫 Quota exhausted. Delaying job 24h:", website);
-
-            await job.moveToDelayed(Date.now() + 24 * 60 * 60 * 1000);
-
-            return;
+            console.log("🚫 Quota exhausted → retry later:", website);
+            throw err;
           }
 
           console.log("Error:", err.message);
+          throw err;
         }
 
       },
@@ -105,8 +106,7 @@ mongoose.connect(process.env.MONGO_URI)
         connection: redisConnection,
         concurrency: 1
       }
-    }
-  );
+    );
 
   })
   .catch(err => console.log("MongoDB error:", err));

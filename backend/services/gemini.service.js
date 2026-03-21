@@ -2,27 +2,16 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import dotenv from "dotenv";
 import { redisConnection } from "../redis/redis.connection.js";
-
-dotenv.config();
 
 if (!process.env.GEMINI_API_KEY) {
   throw new Error("GEMINI_API_KEY missing");
 }
 
-const apiKey = process.env.GEMINI_API_KEY;
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-if (!apiKey) {
-  console.error("❌ GEMINI_API_KEY not found");
-  process.exit(1);
-}
+export const DAILY_LIMIT = 20;
 
-const genAI = new GoogleGenerativeAI(apiKey);
-
-const DAILY_LIMIT = 20;
-
-// 🔒 Central quota guard
 const checkQuota = async () => {
   const usage = await redisConnection.incr("gemini:daily_usage");
 
@@ -52,16 +41,19 @@ Return ONLY JSON:
 {
   "businessType": "",
   "services": [],
-  "description": ""
+  "description": "",
+  "ownerName": "",
+  "emailPattern": ""
 }
 
 Rules:
+- Strict JSON only
 - No markdown
 - No explanation
-- Strict JSON only
+- If unknown, return null
 
 Website text:
-${text.slice(0,15000)}
+${text.slice(0, 15000)}
 `;
 
   try {
@@ -76,11 +68,7 @@ ${text.slice(0,15000)}
 
   } catch (error) {
 
-    const isQuotaExceeded =
-      error.message?.includes("quota") ||
-      error.message?.includes("Quota exceeded");
-
-    if (isQuotaExceeded) {
+    if (error.message?.toLowerCase().includes("quota")) {
       throw new Error("QUOTA_EXCEEDED");
     }
 
