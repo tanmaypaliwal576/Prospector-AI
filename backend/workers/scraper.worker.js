@@ -27,6 +27,7 @@ mongoose.connect(process.env.MONGO_URI)
       async (job) => {
 
         const { query } = job.data;
+        const jobId = job.id;
 
         console.log("Searching Google Maps for:", query);
 
@@ -39,142 +40,136 @@ mongoose.connect(process.env.MONGO_URI)
           ]
         });
 
-        const page = await browser.newPage();
+        try {
 
-        await page.goto(
-          `https://www.google.com/maps/search/${encodeURIComponent(query)}`,
-          { waitUntil: "networkidle2", timeout: 60000 }
-        );
+          const page = await browser.newPage();
 
-        console.log("Maps loaded");
+          await page.goto(
+            `https://www.google.com/maps/search/${encodeURIComponent(query)}`,
+            { waitUntil: "networkidle2", timeout: 60000 }
+          );
 
-        await page.waitForSelector("a.hfpxzc", { timeout: 20000 });
+          await page.waitForSelector("a.hfpxzc", { timeout: 20000 })
+            .catch(() => console.log("Business cards not detected"));
 
-        console.log("Business cards detected");
-
-        /* SCROLL */
-
-        for (let i = 0; i < 15; i++) {
-          await page.evaluate(() => {
-            const scrollable = document.querySelector('div[role="feed"]');
-            if (scrollable) scrollable.scrollBy(0, 3000);
-          });
-          await new Promise(r => setTimeout(r, 2000));
-        }
-
-        console.log("Scrolling finished");
-
-        const businessLinks = await page.$$eval(
-          "a.hfpxzc",
-          links => links.slice(0, 50).map(el => el.href)
-        );
-
-        console.log("Businesses found:", businessLinks.length);
-
-        const leads = [];
-
-        for (const link of businessLinks) {
-
-          const businessPage = await browser.newPage();
-
-          try {
-
-            await businessPage.goto(link, {
-              waitUntil: "domcontentloaded",
-              timeout: 30000
+          // SCROLL
+          for (let i = 0; i < 15; i++) {
+            await page.evaluate(() => {
+              const scrollable = document.querySelector('div[role="feed"]');
+              if (scrollable) scrollable.scrollBy(0, 3000);
             });
+            await new Promise(r => setTimeout(r, 2000));
+          }
 
-            await businessPage.waitForSelector("h1", { timeout: 15000 });
+          const businessLinks = await page.$$eval(
+            "a.hfpxzc",
+            links => links.slice(0, 50).map(el => el.href)
+          );
 
-            const name = await businessPage.$eval("h1", el => el.innerText);
+          console.log("Businesses found:", businessLinks.length);
 
-            const address = await businessPage.$eval(
-              'button[data-item-id="address"]',
-              el => el.innerText
-            ).catch(() => null);
+          // 🔥 SET PROGRESS
+          await redisConnection.set(`scrape:${jobId}:total`, businessLinks.length);
+          await redisConnection.set(`scrape:${jobId}:done`, 0);
 
-            const phone = await businessPage.$eval(
-              'button[data-item-id^="phone"]',
-              el => el.innerText
-            ).catch(() => null);
+          const leads = [];
 
-            let website = await businessPage.$eval(
-              'a[data-item-id="authority"]',
-              el => el.href
-            ).catch(() => null);
+          for (const link of businessLinks) {
 
-            if (!website) {
-              website = await businessPage.$eval(
-                'a[aria-label^="Website"]',
+            const businessPage = await browser.newPage();
+
+            try {
+
+              await businessPage.goto(link, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000
+              });
+
+              await businessPage.waitForSelector("h1", { timeout: 15000 });
+
+              const name = await businessPage.$eval("h1", el => el.innerText);
+
+              const address = await businessPage.$eval(
+                'button[data-item-id="address"]',
+                el => el.innerText
+              ).catch(() => null);
+
+              const phone = await businessPage.$eval(
+                'button[data-item-id^="phone"]',
+                el => el.innerText
+              ).catch(() => null);
+
+              let website = await businessPage.$eval(
+                'a[data-item-id="authority"]',
                 el => el.href
               ).catch(() => null);
+
+              if (!website) {
+                website = await businessPage.$eval(
+                  'a[aria-label^="Website"]',
+                  el => el.href
+                ).catch(() => null);
+              }
+
+              const lead = { name, address, phone, website };
+
+              leads.push(lead);
+
+              console.log("Lead:", lead);
+
+            } catch {
+              console.log("Failed to extract business");
+            } finally {
+              await businessPage.close();
+
+              // 🔥 ALWAYS update progress
+              await redisConnection.incr(`scrape:${jobId}:done`);
             }
-
-            const lead = { name, address, phone, website };
-
-            leads.push(lead);
-
-            console.log("Lead:", lead);
-
-          } catch {
-            console.log("Failed to extract business");
           }
 
-          await businessPage.close();
-        }
+          // SAVE LEADS
+          for (const lead of leads) {
 
-        /* SAVE ALL LEADS */
-
-        for (const lead of leads) {
-
-          if (lead.website) {
-
-            await Lead.updateOne(
-              { website: lead.website },
-              { $set: lead },
-              { upsert: true }
-            );
-
-          } else {
-
-            const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
-
-            await Lead.create({
-              ...lead,
-              website: uniqueKey
-            });
-
+            if (lead.website) {
+              await Lead.updateOne(
+                { website: lead.website },
+                { $set: lead },
+                { upsert: true }
+              );
+            } else {
+              const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
+              await Lead.create({ ...lead, website: uniqueKey });
+            }
           }
-        }
 
-        console.log("Saved leads:", leads.length);
+          console.log("Saved leads:", leads.length);
 
-        /* ⭐ LIMIT ENRICHMENT TO TOP 10 */
+          // 🔥 ENRICH TOP 10 ONLY
+          const topLeads = leads.slice(0, 10);
 
-        const MAX_ENRICH = 10;
-        const topLeads = leads.slice(0, MAX_ENRICH);
-
-        console.log("Enriching only:", topLeads.length);
-
-        for (const lead of topLeads) {
-
-          if (!lead.website) continue;
-
-          if (!lead.website.startsWith("no-website")) {
+          for (const lead of topLeads) {
+            if (!lead.website) continue;
 
             await enrichmentQueue.add("enrich", {
               website: lead.website
             });
-
           }
 
+          console.log("Enrichment jobs added:", topLeads.length);
+
+          return leads;
+
+        } catch (err) {
+
+          console.log("Worker error:", err.message);
+          throw err;
+
+        } finally {
+
+          // 🔥 ALWAYS CLOSE BROWSER
+          await browser.close();
+
         }
-
-        console.log("Enrichment jobs added:", topLeads.length);
-
-        await browser.close();
-
-        return leads;
 
       },
 
