@@ -10,7 +10,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// 🔥 MAIN ROUTE
 app.use("/api/leads", leadsRoutes);
 
 app.get("/", (req, res) => {
