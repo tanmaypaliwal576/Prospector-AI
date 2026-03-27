@@ -25,7 +25,18 @@ mongoose.connect(process.env.MONGO_URI)
     let isProcessing = false;
 
     const BATCH_SIZE = 3;
+
     const seenWebsites = new Set();
+
+    // 🔥 BAD DOMAINS FILTER
+    const badDomains = [
+      "booking.com",
+      "facebook.com",
+      "instagram.com",
+      "tripadvisor.com",
+      "bit.ly",
+      "justdial.com"
+    ];
 
     // =========================
     // 🔥 PROCESS BATCH
@@ -37,7 +48,6 @@ mongoose.connect(process.env.MONGO_URI)
 
       isProcessing = true;
 
-      // 🔥 TAKE EXACT BATCH
       const currentBatch = batch.slice(0, BATCH_SIZE);
       batch = batch.slice(BATCH_SIZE);
 
@@ -126,7 +136,6 @@ mongoose.connect(process.env.MONGO_URI)
 
       isProcessing = false;
 
-      // 🔥 PROCESS NEXT IF AVAILABLE
       if (batch.length >= BATCH_SIZE) {
         await processBatch();
       }
@@ -146,7 +155,7 @@ mongoose.connect(process.env.MONGO_URI)
 
         if (!lead || !lead.website) return;
 
-        // 🔥 SKIP CONDITIONS
+        // 🔥 SKIP DUPLICATES
         if (lead.enriched === true) {
           console.log("⏭️ Already enriched:", lead.website);
           return;
@@ -159,6 +168,12 @@ mongoose.connect(process.env.MONGO_URI)
 
         if (seenWebsites.has(lead.website)) {
           console.log("♻️ Duplicate skipped:", lead.website);
+          return;
+        }
+
+        // 🔥 BAD DOMAIN FILTER
+        if (badDomains.some(d => lead.website.includes(d))) {
+          console.log("🚫 Skipped aggregator:", lead.website);
           return;
         }
 
@@ -182,7 +197,7 @@ mongoose.connect(process.env.MONGO_URI)
           return;
         }
 
-        // 🔍 FILTER
+        // 🔥 FINAL FILTER
         if (!text || text.length < 1500) {
           console.log("❌ Skipped (low content):", lead.website);
           return;
@@ -192,16 +207,15 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Valid (${text.length} chars)`);
 
-        // 🔥 SAFE PUSH (NO OVERFLOW)
+        // 🔥 SAFE PUSH
         if (batch.length < BATCH_SIZE) {
           batch.push({ lead, text });
           console.log(`📦 Current batch size: ${batch.length}/${BATCH_SIZE}`);
         } else {
-          console.log("⏳ Batch full → waiting for processing");
+          console.log("⏳ Batch full → waiting");
           return;
         }
 
-        // 🔥 TRIGGER PROCESS
         if (batch.length === BATCH_SIZE) {
           await processBatch();
         }
@@ -214,9 +228,7 @@ mongoose.connect(process.env.MONGO_URI)
       }
     );
 
-    // =========================
     // 🔥 AUTO FLUSH
-    // =========================
     setInterval(async () => {
       if (batch.length > 0 && !isProcessing) {
         console.log("⏳ Flushing remaining batch...");
@@ -224,9 +236,7 @@ mongoose.connect(process.env.MONGO_URI)
       }
     }, 10000);
 
-    // =========================
     // 🔥 HEARTBEAT
-    // =========================
     setInterval(() => {
       console.log("🟢 Worker alive... waiting for jobs");
     }, 15000);
