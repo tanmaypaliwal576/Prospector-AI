@@ -11,17 +11,16 @@ import dotenv from "dotenv";
 import Lead from "../models/Lead.js";
 
 dotenv.config();
-
 puppeteer.use(StealthPlugin());
 
-console.log("Starting Worker...");
+console.log("🚀 [SCRAPER] Worker Booting...");
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
 
-    console.log("Worker MongoDB Connected");
+    console.log("✅ [SCRAPER] MongoDB Connected");
 
-    const worker = new Worker(
+    new Worker(
       "scraperQueue",
 
       async (job) => {
@@ -29,16 +28,92 @@ mongoose.connect(process.env.MONGO_URI)
         const { query } = job.data;
         const jobId = job.id;
 
-        console.log("Searching Google Maps for:", query);
+        console.log(`\n==============================`);
+        console.log(`🔍 [SCRAPER] JOB STARTED → ${query}`);
+        console.log(`🆔 Job ID: ${jobId}`);
+        console.log(`==============================\n`);
 
         const browser = await puppeteer.launch({
           headless: false,
-          args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled"
-          ]
+          args: ["--no-sandbox", "--disable-setuid-sandbox"]
         });
+
+        let batch = [];
+        const BATCH_SIZE = 10;
+
+        // =========================
+        // 🔥 SAFE BATCH PROCESSOR
+        // =========================
+        const processBatch = async (batchData) => {
+
+          if (batchData.length === 0) return;
+
+          console.log("💾 [SCRAPER] Saving batch...");
+
+          try {
+
+            // 🔥 DEDUPE
+            const uniqueMap = new Map();
+
+            for (const l of batchData) {
+              if (l.website) {
+                uniqueMap.set(l.website, l);
+              } else {
+                const key = `no-${Math.random()}`;
+                uniqueMap.set(key, l);
+              }
+            }
+
+            const uniqueBatch = Array.from(uniqueMap.values());
+
+            const saved = await Promise.all(
+              uniqueBatch.map(async (l) => {
+
+                if (l.website) {
+                  return await Lead.findOneAndUpdate(
+                    { website: l.website },
+                    {
+                      $set: {
+                        ...l,
+                        enriched: false,
+                        enrichmentStatus: "pending"
+                      }
+                    },
+                    { upsert: true, returnDocument: "after" }
+                  );
+                } else {
+                  return await Lead.create({
+                    ...l,
+                    website: `no-website-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                  });
+                }
+              })
+            );
+
+            console.log(`✅ [SCRAPER] Batch saved (${saved.length})`);
+
+            // 🔥 FILTER VALID
+            const valid = saved.filter(
+              l => l.website && !l.website.startsWith("no-website")
+            );
+
+            console.log(`📤 [SCRAPER] Sending ${valid.length} leads to enrichment`);
+
+            await Promise.all(
+              valid.map(l =>
+                enrichmentQueue.add("enrich", { leadId: l._id }, {
+                  attempts: 3,
+                  backoff: { type: "exponential", delay: 30000 }
+                })
+              )
+            );
+
+            console.log("🚀 [SCRAPER] Batch pushed\n");
+
+          } catch (err) {
+            console.log("❌ [SCRAPER] Batch error:", err.message);
+          }
+        };
 
         try {
 
@@ -49,143 +124,104 @@ mongoose.connect(process.env.MONGO_URI)
             { waitUntil: "networkidle2", timeout: 60000 }
           );
 
-          await page.waitForSelector("a.hfpxzc", { timeout: 20000 })
-            .catch(() => console.log("Business cards not detected"));
+          await page.waitForSelector("a.hfpxzc");
 
-          // SCROLL
           for (let i = 0; i < 15; i++) {
             await page.evaluate(() => {
-              const scrollable = document.querySelector('div[role="feed"]');
-              if (scrollable) scrollable.scrollBy(0, 3000);
+              const el = document.querySelector('div[role="feed"]');
+              if (el) el.scrollBy(0, 3000);
             });
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 1500));
           }
 
-          const businessLinks = await page.$$eval(
+          const links = await page.$$eval(
             "a.hfpxzc",
-            links => links.slice(0, 50).map(el => el.href)
+            els => els.slice(0, 50).map(e => e.href)
           );
 
-          console.log("Businesses found:", businessLinks.length);
+          console.log(`📊 [SCRAPER] Total links: ${links.length}`);
 
-          // 🔥 SET PROGRESS
-          await redisConnection.set(`scrape:${jobId}:total`, businessLinks.length);
+          await redisConnection.set(`scrape:${jobId}:total`, links.length);
           await redisConnection.set(`scrape:${jobId}:done`, 0);
 
-          const leads = [];
+          let count = 0;
 
-          for (const link of businessLinks) {
+          for (const link of links) {
 
-            const businessPage = await browser.newPage();
+            const p = await browser.newPage();
 
             try {
 
-              await businessPage.goto(link, {
-                waitUntil: "domcontentloaded",
-                timeout: 30000
-              });
+              await p.goto(link, { timeout: 30000 });
+              await p.waitForSelector("h1");
 
-              await businessPage.waitForSelector("h1", { timeout: 15000 });
+              const name = await p.$eval("h1", el => el.innerText);
 
-              const name = await businessPage.$eval("h1", el => el.innerText);
-
-              const address = await businessPage.$eval(
+              const address = await p.$eval(
                 'button[data-item-id="address"]',
                 el => el.innerText
               ).catch(() => null);
 
-              const phone = await businessPage.$eval(
+              const phone = await p.$eval(
                 'button[data-item-id^="phone"]',
                 el => el.innerText
               ).catch(() => null);
 
-              let website = await businessPage.$eval(
+              let website = await p.$eval(
                 'a[data-item-id="authority"]',
                 el => el.href
               ).catch(() => null);
 
               if (!website) {
-                website = await businessPage.$eval(
+                website = await p.$eval(
                   'a[aria-label^="Website"]',
                   el => el.href
                 ).catch(() => null);
               }
 
-              const lead = { name, address, phone, website };
+              console.log(`📌 ${name}`);
+              console.log(`🌐 ${website || "NONE"}`);
 
-              leads.push(lead);
+              batch.push({ name, address, phone, website });
+              count++;
 
-              console.log("Lead:", lead);
+              console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
 
-            } catch {
-              console.log("Failed to extract business");
+              // 🔥 PROCESS EXACT BATCH
+              if (batch.length === BATCH_SIZE) {
+                const currentBatch = [...batch];
+                batch = []; // 🔥 RESET FIRST (IMPORTANT)
+                await processBatch(currentBatch);
+              }
+
+            } catch (err) {
+              console.log("❌ Extraction failed:", err.message);
             } finally {
-              await businessPage.close();
-
-              // 🔥 ALWAYS update progress
+              await p.close();
               await redisConnection.incr(`scrape:${jobId}:done`);
             }
           }
 
-          // SAVE LEADS
-          for (const lead of leads) {
-
-            if (lead.website) {
-              await Lead.updateOne(
-                { website: lead.website },
-                { $set: lead },
-                { upsert: true }
-              );
-            } else {
-              const uniqueKey = `no-website-${Date.now()}-${Math.random()}`;
-              await Lead.create({ ...lead, website: uniqueKey });
-            }
+          // 🔥 FINAL BATCH
+          if (batch.length > 0) {
+            console.log("\n📦 Processing FINAL batch...");
+            const finalBatch = [...batch];
+            batch = [];
+            await processBatch(finalBatch);
           }
 
-          console.log("Saved leads:", leads.length);
-
-          // 🔥 ENRICH TOP 10 ONLY
-          const topLeads = leads.slice(0, 10);
-
-          for (const lead of topLeads) {
-            if (!lead.website) continue;
-
-            await enrichmentQueue.add("enrich", {
-              website: lead.website
-            });
-          }
-
-          console.log("Enrichment jobs added:", topLeads.length);
-
-          return leads;
+          console.log("\n🎉 [SCRAPER] JOB COMPLETED\n");
 
         } catch (err) {
-
-          console.log("Worker error:", err.message);
-          throw err;
-
+          console.log("❌ [SCRAPER] Fatal:", err.message);
         } finally {
-
-          // 🔥 ALWAYS CLOSE BROWSER
           await browser.close();
-
+          console.log("🧹 [SCRAPER] Browser closed\n");
         }
-
       },
 
-      {
-        connection: redisConnection,
-        concurrency: 2
-      }
+      { connection: redisConnection, concurrency: 2 }
     );
 
-    worker.on("completed", job => {
-      console.log(`Job ${job.id} completed`);
-    });
-
-    worker.on("failed", (job, err) => {
-      console.log(`Job ${job.id} failed`, err);
-    });
-
   })
-  .catch(err => console.log("MongoDB connection error:", err));
+  .catch(err => console.log("❌ Mongo error:", err));

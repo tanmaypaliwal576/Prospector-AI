@@ -19,28 +19,27 @@ const leadSchema = new mongoose.Schema(
   services: [String],
   businessType: String,
   description: String,
+
   ownerName: String,
   emailGuess: String,
 
   leadQuality: {
     type: String,
-    enum: ["High", "Medium", "Low"],
-    default: "Low"
+    enum: ["High", "Medium", "Low"]
   },
 
-  enriched: {
-    type: Boolean,
-    default: false
-  },
+  // ✅ ADD THESE ↓↓↓
 
-  enrichmentStatus: {
+  sourceQuery: String,        // "Dentists in Chicago"
+  status: {
     type: String,
-    enum: ["pending", "processing", "done", "failed"],
-    default: "pending"
+    enum: ["scraped", "enriched", "failed"],
+    default: "scraped"
   }
 
 },
-{ timestamps: true }
-);
+{
+  timestamps: true   // ✅ IMPORTANT
+});
 
 export default mongoose.model("Lead", leadSchema);
