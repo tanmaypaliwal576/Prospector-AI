@@ -13,167 +13,68 @@ import { calculateLeadScore } from "../utils/leadScoring.js";
 
 dotenv.config();
 
-const BATCH_SIZE = 5;
-
-// 🔥 BLOCKED DOMAINS
-const BLOCKED_DOMAINS = [
-  "marriott.com",
-  "hyatt.com",
-  "tajhotels.com",
-  "radissonhotels.com",
-  "itchotels.com",
-  "seleqtionshotels.com",
-  "booking.com",
-  "makemytrip.com",
-  "tripadvisor.com"
-];
-
-// 🔥 AGGREGATORS / JUNK
-const BLOCKED_AGGREGATORS = [
-  "linktr.ee",
-  "all.accor.com",
-  "bookmystay.io",
-  "expedia.com",
-  "goibibo.com",
-  "agoda.com"
-];
-
-// 🔥 CLEAN URL
-const cleanURL = (url) => {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.hostname}`;
-  } catch {
-    return url;
-  }
-};
+console.log("🚀 [ENRICHMENT] Worker Booting...");
 
 mongoose.connect(process.env.MONGO_URI)
-.then(() => {
+  .then(() => {
 
-  console.log("🚀 Enrichment Worker Started (FINAL)");
+    console.log("✅ [ENRICHMENT] MongoDB Connected");
 
-  new Worker(
-    "enrichmentQueue",
+    let batch = [];
+    let batchCounter = 1;
+    let isProcessing = false;
 
-    async () => {
+    const BATCH_SIZE = 3;
+    const seenWebsites = new Set();
 
-      console.log("📥 Enrichment job triggered");
+    // =========================
+    // 🔥 PROCESS BATCH
+    // =========================
+    const processBatch = async () => {
 
-      const leads = await Lead.find({
-        enriched: false,
-        enrichmentStatus: { $in: ["pending", "processing"] },
-        website: { $exists: true }
-      }).limit(BATCH_SIZE);
+      if (isProcessing) return;
+      if (batch.length === 0) return;
 
-      if (leads.length === 0) {
-        console.log("😴 No pending leads — idle");
-        await new Promise(r => setTimeout(r, 15000));
-        return;
-      }
+      isProcessing = true;
 
-      console.log(`📦 Batch size: ${leads.length}`);
+      // 🔥 TAKE EXACT BATCH
+      const currentBatch = batch.slice(0, BATCH_SIZE);
+      batch = batch.slice(BATCH_SIZE);
 
-      const validLeads = [];
-      const processedDomains = new Set();
+      const batchNumber = batchCounter++;
 
-      for (const lead of leads) {
+      console.log("\n==============================");
+      console.log(`📦 Batch ${batchNumber} READY (${currentBatch.length} leads)`);
+      console.log("==============================");
 
-        await Lead.updateOne(
-          { _id: lead._id },
-          { $set: { enrichmentStatus: "processing" } }
-        );
-
-        let website = lead.website;
-
-        // ❌ Invalid
-        if (!website || website.startsWith("no-website")) {
-          console.log("🚫 Invalid website:", website);
-          await Lead.updateOne({ _id: lead._id }, { $set: { enrichmentStatus: "failed" } });
-          continue;
-        }
-
-        website = cleanURL(website);
-
-        let domain;
-        try {
-          domain = new URL(website).hostname.replace("www.", "");
-        } catch {
-          continue;
-        }
-
-        // ❌ Duplicate
-        if (processedDomains.has(domain)) {
-          console.log("🔁 Duplicate skipped:", domain);
-          await Lead.updateOne({ _id: lead._id }, { $set: { enrichmentStatus: "failed" } });
-          continue;
-        }
-        processedDomains.add(domain);
-
-        // ❌ Aggregator
-        if (BLOCKED_AGGREGATORS.some(d => domain.includes(d))) {
-          console.log("🚫 Aggregator skipped:", domain);
-          await Lead.updateOne({ _id: lead._id }, { $set: { enrichmentStatus: "failed" } });
-          continue;
-        }
-
-        // ❌ Heavy domain
-        if (BLOCKED_DOMAINS.some(d => domain.includes(d))) {
-          console.log("🚫 Heavy domain skipped:", domain);
-          await Lead.updateOne({ _id: lead._id }, { $set: { enrichmentStatus: "failed" } });
-          continue;
-        }
-
-        // 🔍 Extraction
-        let text = await lightExtract(website);
-
-        if (!text || text.length < 1000) {
-          console.log("🔁 Fallback triggered:", website);
-
-          text = await extractWebsiteText(website);
-
-          if (!text || text.length < 1000) {
-            await Lead.updateOne({ _id: lead._id }, { $set: { enrichmentStatus: "failed" } });
-            continue;
-          }
-        }
-
-        console.log("📄 Text length:", text.length);
-
-        validLeads.push({ lead, text, website });
-      }
-
-      console.log(`✅ Valid leads: ${validLeads.length}`);
-      if (validLeads.length === 0) return;
+      const texts = currentBatch.map(b => b.text);
 
       try {
 
-        const texts = validLeads.map(v => v.text);
+        console.log(`🤖 Batch ${batchNumber} → Sending to Gemini (${texts.length} leads)`);
 
-        console.log("🚀 Sending batch to Gemini...");
         const results = await analyzeBatch(texts);
 
-        if (!results) {
-          console.log("❌ Gemini failed");
-          return;
-        }
+        console.log(`✅ Batch ${batchNumber} → Gemini response received`);
 
-        console.log(`✅ Batch processed (${results.length})`);
+        for (let i = 0; i < currentBatch.length; i++) {
 
-        const safeLength = Math.min(results.length, validLeads.length);
+          const { lead, text } = currentBatch[i];
+          const aiData = results?.[i];
 
-        for (let i = 0; i < safeLength; i++) {
-
-          const { lead, text, website } = validLeads[i];
-          const aiData = results[i];
+          if (!aiData) {
+            console.log(`⚠️ Batch ${batchNumber} → Missing AI data`);
+            continue;
+          }
 
           let emailGuess = null;
+
           try {
-            const domain = new URL(website).hostname.replace("www.", "");
+            const domain = new URL(lead.website).hostname.replace("www.", "");
             emailGuess = `info@${domain}`;
           } catch {}
 
-          const leadQuality = calculateLeadScore(
+          const score = calculateLeadScore(
             { ...aiData, phone: lead.phone, emailGuess },
             text.length
           );
@@ -187,35 +88,148 @@ mongoose.connect(process.env.MONGO_URI)
                 description: aiData.description || null,
                 ownerName: aiData.ownerName || null,
                 emailGuess,
-                leadQuality,
+                leadQuality: score,
                 enriched: true,
                 enrichmentStatus: "done"
               }
             }
           );
 
-          console.log(`✅ Enriched (${leadQuality}):`, website);
+          console.log(`✅ Batch ${batchNumber} → Enriched (${score}) → ${lead.website}`);
         }
 
-        console.log("🎉 Batch completed");
-        await new Promise(r => setTimeout(r, 5000));
+        console.log(`🎉 Batch ${batchNumber} COMPLETED\n`);
 
       } catch (err) {
+
         if (err.message === "QUOTA_EXCEEDED") {
-          console.log("🚫 Quota exceeded → sleeping");
-          await new Promise(r => setTimeout(r, 24 * 60 * 60 * 1000));
+
+          console.log(`🚫 Batch ${batchNumber} → QUOTA EXCEEDED`);
+
+          for (const item of currentBatch) {
+            await Lead.updateOne(
+              { _id: item.lead._id },
+              {
+                $set: {
+                  enriched: false,
+                  enrichmentStatus: "skipped_quota"
+                }
+              }
+            );
+          }
+
+          console.log(`🛑 Batch ${batchNumber} stopped due to quota\n`);
         } else {
-          console.log("❌ Error:", err.message);
+          console.log(`❌ Batch ${batchNumber} error:`, err.message);
         }
       }
 
-    },
+      isProcessing = false;
 
-    {
-      connection: redisConnection,
-      concurrency: 1
-    }
-  );
+      // 🔥 PROCESS NEXT IF AVAILABLE
+      if (batch.length >= BATCH_SIZE) {
+        await processBatch();
+      }
+    };
 
-})
-.catch(err => console.log("MongoDB error:", err));
+    // =========================
+    // 🔥 WORKER
+    // =========================
+    new Worker(
+      "enrichmentQueue",
+
+      async (job) => {
+
+        const { leadId } = job.data;
+
+        const lead = await Lead.findById(leadId);
+
+        if (!lead || !lead.website) return;
+
+        // 🔥 SKIP CONDITIONS
+        if (lead.enriched === true) {
+          console.log("⏭️ Already enriched:", lead.website);
+          return;
+        }
+
+        if (lead.enrichmentStatus === "skipped_quota") {
+          console.log("⏭️ Skipped earlier (quota):", lead.website);
+          return;
+        }
+
+        if (seenWebsites.has(lead.website)) {
+          console.log("♻️ Duplicate skipped:", lead.website);
+          return;
+        }
+
+        seenWebsites.add(lead.website);
+
+        console.log(`\n📥 Processing → ${lead.website}`);
+
+        let text;
+
+        try {
+
+          text = await lightExtract(lead.website);
+
+          if (!text || text.length < 1500) {
+            console.log("🔁 Using fallback extractor...");
+            text = await extractWebsiteText(lead.website);
+          }
+
+        } catch (err) {
+          console.log("❌ Extraction failed:", err.message);
+          return;
+        }
+
+        // 🔍 FILTER
+        if (!text || text.length < 1500) {
+          console.log("❌ Skipped (low content):", lead.website);
+          return;
+        }
+
+        text = text.slice(0, 3000);
+
+        console.log(`✅ Valid (${text.length} chars)`);
+
+        // 🔥 SAFE PUSH (NO OVERFLOW)
+        if (batch.length < BATCH_SIZE) {
+          batch.push({ lead, text });
+          console.log(`📦 Current batch size: ${batch.length}/${BATCH_SIZE}`);
+        } else {
+          console.log("⏳ Batch full → waiting for processing");
+          return;
+        }
+
+        // 🔥 TRIGGER PROCESS
+        if (batch.length === BATCH_SIZE) {
+          await processBatch();
+        }
+
+      },
+
+      {
+        connection: redisConnection,
+        concurrency: 2
+      }
+    );
+
+    // =========================
+    // 🔥 AUTO FLUSH
+    // =========================
+    setInterval(async () => {
+      if (batch.length > 0 && !isProcessing) {
+        console.log("⏳ Flushing remaining batch...");
+        await processBatch();
+      }
+    }, 10000);
+
+    // =========================
+    // 🔥 HEARTBEAT
+    // =========================
+    setInterval(() => {
+      console.log("🟢 Worker alive... waiting for jobs");
+    }, 15000);
+
+  })
+  .catch(err => console.log("❌ Mongo error:", err));
