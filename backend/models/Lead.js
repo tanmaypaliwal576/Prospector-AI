@@ -28,9 +28,8 @@ const leadSchema = new mongoose.Schema(
     enum: ["High", "Medium", "Low"]
   },
 
-  // ✅ ADD THESE ↓↓↓
+  sourceQuery: String,
 
-  sourceQuery: String,        // "Dentists in Chicago"
   status: {
     type: String,
     enum: ["scraped", "enriched", "failed"],
@@ -39,7 +38,15 @@ const leadSchema = new mongoose.Schema(
 
 },
 {
-  timestamps: true   // ✅ IMPORTANT
-});
+  timestamps: true
+}
+);
+
+/* 🔥 INDEXES (CRITICAL) */
+leadSchema.index({ leadQuality: 1 });
+leadSchema.index({ businessType: 1 });
+leadSchema.index({ rating: 1 });
+leadSchema.index({ createdAt: -1 });
+leadSchema.index({ sourceQuery: 1 });
 
 export default mongoose.model("Lead", leadSchema);
