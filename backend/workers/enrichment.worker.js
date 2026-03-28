@@ -28,7 +28,6 @@ mongoose.connect(process.env.MONGO_URI)
 
     const seenWebsites = new Set();
 
-    // 🔥 BAD DOMAINS FILTER
     const badDomains = [
       "booking.com",
       "facebook.com",
@@ -38,9 +37,9 @@ mongoose.connect(process.env.MONGO_URI)
       "justdial.com"
     ];
 
-    // =========================
-    // 🔥 PROCESS BATCH
-    // =========================
+    /* =========================
+       PROCESS BATCH
+    ========================= */
     const processBatch = async () => {
 
       if (isProcessing) return;
@@ -61,7 +60,7 @@ mongoose.connect(process.env.MONGO_URI)
 
       try {
 
-        console.log(`🤖 Batch ${batchNumber} → Sending to Gemini (${texts.length} leads)`);
+        console.log(`🤖 Batch ${batchNumber} → Sending to Gemini`);
 
         const results = await analyzeBatch(texts);
 
@@ -73,7 +72,7 @@ mongoose.connect(process.env.MONGO_URI)
           const aiData = results?.[i];
 
           if (!aiData) {
-            console.log(`⚠️ Batch ${batchNumber} → Missing AI data`);
+            console.log(`⚠️ Missing AI data`);
             continue;
           }
 
@@ -89,6 +88,7 @@ mongoose.connect(process.env.MONGO_URI)
             text.length
           );
 
+          // 🔥 FINAL UPDATE (FIXED)
           await Lead.updateOne(
             { _id: lead._id },
             {
@@ -99,13 +99,15 @@ mongoose.connect(process.env.MONGO_URI)
                 ownerName: aiData.ownerName || null,
                 emailGuess,
                 leadQuality: score,
+
                 enriched: true,
-                enrichmentStatus: "done"
+                enrichmentStatus: "done",
+                status: "enriched" // 🔥 CRITICAL FIX
               }
             }
           );
 
-          console.log(`✅ Batch ${batchNumber} → Enriched (${score}) → ${lead.website}`);
+          console.log(`✅ Enriched (${score}) → ${lead.website}`);
         }
 
         console.log(`🎉 Batch ${batchNumber} COMPLETED\n`);
@@ -114,7 +116,7 @@ mongoose.connect(process.env.MONGO_URI)
 
         if (err.message === "QUOTA_EXCEEDED") {
 
-          console.log(`🚫 Batch ${batchNumber} → QUOTA EXCEEDED`);
+          console.log(`🚫 QUOTA EXCEEDED`);
 
           for (const item of currentBatch) {
             await Lead.updateOne(
@@ -122,15 +124,15 @@ mongoose.connect(process.env.MONGO_URI)
               {
                 $set: {
                   enriched: false,
-                  enrichmentStatus: "skipped_quota"
+                  enrichmentStatus: "skipped_quota",
+                  status: "failed" // 🔥 FIX
                 }
               }
             );
           }
 
-          console.log(`🛑 Batch ${batchNumber} stopped due to quota\n`);
         } else {
-          console.log(`❌ Batch ${batchNumber} error:`, err.message);
+          console.log(`❌ Batch error:`, err.message);
         }
       }
 
@@ -141,9 +143,9 @@ mongoose.connect(process.env.MONGO_URI)
       }
     };
 
-    // =========================
-    // 🔥 WORKER
-    // =========================
+    /* =========================
+       WORKER
+    ========================= */
     new Worker(
       "enrichmentQueue",
 
@@ -155,14 +157,14 @@ mongoose.connect(process.env.MONGO_URI)
 
         if (!lead || !lead.website) return;
 
-        // 🔥 SKIP DUPLICATES
-        if (lead.enriched === true) {
+        // 🔥 Skip already enriched
+        if (lead.status === "enriched") {
           console.log("⏭️ Already enriched:", lead.website);
           return;
         }
 
         if (lead.enrichmentStatus === "skipped_quota") {
-          console.log("⏭️ Skipped earlier (quota):", lead.website);
+          console.log("⏭️ Skipped (quota):", lead.website);
           return;
         }
 
@@ -171,9 +173,8 @@ mongoose.connect(process.env.MONGO_URI)
           return;
         }
 
-        // 🔥 BAD DOMAIN FILTER
         if (badDomains.some(d => lead.website.includes(d))) {
-          console.log("🚫 Skipped aggregator:", lead.website);
+          console.log("🚫 Aggregator skipped:", lead.website);
           return;
         }
 
@@ -197,9 +198,8 @@ mongoose.connect(process.env.MONGO_URI)
           return;
         }
 
-        // 🔥 FINAL FILTER
         if (!text || text.length < 1500) {
-          console.log("❌ Skipped (low content):", lead.website);
+          console.log("❌ Skipped (low content)");
           return;
         }
 
@@ -207,12 +207,11 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Valid (${text.length} chars)`);
 
-        // 🔥 SAFE PUSH
         if (batch.length < BATCH_SIZE) {
           batch.push({ lead, text });
-          console.log(`📦 Current batch size: ${batch.length}/${BATCH_SIZE}`);
+          console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
         } else {
-          console.log("⏳ Batch full → waiting");
+          console.log("⏳ Batch full, waiting...");
           return;
         }
 
@@ -228,7 +227,9 @@ mongoose.connect(process.env.MONGO_URI)
       }
     );
 
-    // 🔥 AUTO FLUSH
+    /* =========================
+       AUTO FLUSH
+    ========================= */
     setInterval(async () => {
       if (batch.length > 0 && !isProcessing) {
         console.log("⏳ Flushing remaining batch...");
@@ -236,9 +237,11 @@ mongoose.connect(process.env.MONGO_URI)
       }
     }, 10000);
 
-    // 🔥 HEARTBEAT
+    /* =========================
+       HEARTBEAT
+    ========================= */
     setInterval(() => {
-      console.log("🟢 Worker alive... waiting for jobs");
+      console.log("🟢 Worker alive...");
     }, 15000);
 
   })
