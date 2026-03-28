@@ -7,11 +7,26 @@ export const exportToCSV = (leads) => {
     "phone",
     "address",
     "rating",
+    "reviews",
     "services",
+    "businessType",
+    "description",
+    "ownerName",
     "emailGuess",
     "leadQuality"
   ];
 
+  const normalized = leads.map((lead) => ({
+    ...lead,
+    services: Array.isArray(lead.services)
+      ? lead.services.join(", ")
+      : "",
+    rating: lead.rating || "",
+    reviews: lead.reviews || "",
+    emailGuess: lead.emailGuess || "",
+    description: lead.description || ""
+  }));
+
   const parser = new Parser({ fields });
-  return parser.parse(leads);
+  return parser.parse(normalized);
 };
