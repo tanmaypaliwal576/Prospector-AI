@@ -1,7 +1,9 @@
-import Scraper from "./components/Scraper";
+import Dashboard from "./pages/Dashboard";
 
 function App() {
-  return <Scraper />;
+  return <>
+  <Dashboard/>
+  </>;
 }
 
 export default App;
