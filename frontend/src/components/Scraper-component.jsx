@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const Scraper = () => {
+const ScraperComponent = () => {
   const [query, setQuery] = useState("");
   const [jobId, setJobId] = useState(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -174,4 +174,4 @@ const styles = {
   }
 };
 
-export default Scraper;
+export default ScraperComponent;
