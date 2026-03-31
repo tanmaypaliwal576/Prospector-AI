@@ -1,45 +1,71 @@
 @import "tailwindcss";
 
-@layer utilities {
-  .glass-panel {
-    @apply bg-white/10 backdrop-blur-lg border border-white/20 shadow-xl rounded-2xl;
-  }
-  .animate-gradient {
-    background-size: 300%;
-    animation: animatedgradient 6s ease infinite alternate;
-  }
-}
-
-@keyframes animatedgradient {
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
-}
 
 body {
+  background-color: #030303;
+  color: white;
+  min-height: 100vh;
   margin: 0;
-  font-family: 'Inter', sans-serif;
-  color: #fff;
-  @apply bg-gradient-to-br from-indigo-900 via-purple-900 to-slate-900 min-h-screen text-slate-100;
+  position: relative;
+  overflow-x: hidden;
 }
 
-/* Custom Scrollbar for minimalistic look */
-::-webkit-scrollbar {
-  width: 8px;
+body::before {
+  content: '';
+  position: fixed;
+  top: -20%;
+  left: -10%;
+  width: 50vw;
+  height: 50vw;
+  background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, rgba(0,0,0,0) 70%);
+  border-radius: 50%;
+  z-index: -1;
+  pointer-events: none;
 }
-::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05); 
+
+body::after {
+  content: '';
+  position: fixed;
+  bottom: -20%;
+  right: -10%;
+  width: 60vw;
+  height: 60vw;
+  background: radial-gradient(circle, rgba(168,85,247,0.1) 0%, rgba(0,0,0,0) 70%);
+  border-radius: 50%;
+  z-index: -1;
+  pointer-events: none;
 }
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2); 
-  border-radius: 10px;
+
+/* GLASS */
+.glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3); 
+
+/* BUTTON */
+.btn-primary {
+  background: linear-gradient(135deg, #ffffff 0%, #e2e2e2 100%);
+  color: #000;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 14px rgba(255,255,255,0.1);
+}
+
+.btn-primary:active {
+  transform: scale(0.96);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(255,255,255,0.15);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
 }
