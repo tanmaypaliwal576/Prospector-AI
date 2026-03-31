@@ -13,7 +13,7 @@ export function calculateLeadScore(data, textLength) {
 
   if (!data.services || data.services.length === 0) score -= 1;
 
-  if (score >= 10) return "High";
-  if (score >= 4) return "Medium";
+  if (score >= 5) return "High";
+  if (score >= 3) return "Medium";
   return "Low";
 }
