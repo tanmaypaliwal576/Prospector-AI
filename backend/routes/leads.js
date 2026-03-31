@@ -72,13 +72,14 @@ router.get("/", async (req, res) => {
 
     const filter = {};
 
-    // ✅ Only enriched leads
-    filter.status = "enriched";
-
     if (quality) {
-      filter.leadQuality = {
-        $regex: new RegExp(`^${quality}$`, "i")
-      };
+      if (quality.toLowerCase() === "low") {
+        filter.leadQuality = { $in: [new RegExp(`^low$`, "i"), null] };
+      } else {
+        filter.leadQuality = {
+          $regex: new RegExp(`^${quality}$`, "i")
+        };
+      }
     }
 
     if (query) {
@@ -140,7 +141,6 @@ router.get("/", async (req, res) => {
 router.get("/stats", async (req, res) => {
   try {
     const stats = await Lead.aggregate([
-      { $match: { status: "enriched" } },
       {
         $group: {
           _id: "$leadQuality",
@@ -149,7 +149,7 @@ router.get("/stats", async (req, res) => {
       }
     ]);
 
-    const total = await Lead.countDocuments({ status: "enriched" });
+    const total = await Lead.countDocuments({});
 
     const formatted = {
       High: 0,
@@ -158,7 +158,11 @@ router.get("/stats", async (req, res) => {
     };
 
     stats.forEach((s) => {
-      if (s._id) formatted[s._id] = s.count;
+      if (!s._id || s._id.toLowerCase() === 'low') {
+        formatted.Low += s.count;
+      } else if (formatted[s._id] !== undefined) {
+        formatted[s._id] += s.count;
+      }
     });
 
     res.json({

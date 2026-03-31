@@ -33,7 +33,7 @@ function truncate(text, max = 120) {
  */
 export const exportLeadsToCSV = async (res) => {
   try {
-    const leads = await Lead.find({ status: "enriched" }).lean();
+    const leads = await Lead.find({}).lean();
 
     // ✅ Clean readable headers
     const headers = [

@@ -51,7 +51,7 @@ mongoose.connect(process.env.MONGO_URI)
         });
 
         let batch = [];
-        const BATCH_SIZE = 10;
+        const BATCH_SIZE = 1; // Real-time processing
 
         // =========================
         // 🔥 PROCESS BATCH
@@ -191,13 +191,13 @@ mongoose.connect(process.env.MONGO_URI)
                 'button[data-item-id="address"]',
                 el => el.innerText
               ).catch(() => null);
-              if (address) address = address.replace(/[\u200B-\u200F\u202A-\u202E\uE000-\uF8FF\uFFFD]/g, "").replace(/[^\p{L}\p{N}\p{P}\p{Z}\+\=]/gu, "").trim();
+              if (address) address = address.replace(/[\u200B-\u200F\u202A-\u202E\uE000-\uF8FF\uFFFD]/g, "").replace(/[^\p{L}\p{N}\p{P}\p{Z}+=]/gu, "").trim();
 
               let phone = await p.$eval(
                 'button[data-item-id^="phone"]',
                 el => el.innerText
               ).catch(() => null);
-              if (phone) phone = phone.replace(/[^\d\+\-\s\(\)]/g, "").trim();
+              if (phone) phone = phone.replace(/[^\d+\-\s()]/g, "").trim();
 
               let website = await p.$eval(
                 'a[data-item-id="authority"]',

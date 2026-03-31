@@ -30,7 +30,7 @@ const leadSchema = new mongoose.Schema(
   leadQuality: {
     type: String,
     enum: ["High", "Medium", "Low"],
-    default: null
+    default: "Low"
   },
 
   sourceQuery: String,
