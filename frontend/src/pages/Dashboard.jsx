@@ -6,7 +6,7 @@ export default function Dashboard() {
   const [leads, setLeads] = useState([]);
   const [stats, setStats] = useState({});
   const [query, setQuery] = useState("");
-  const [credits, setCredits] = useState(0);
+  const [credits, setCredits] = useState(null);
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -29,7 +29,7 @@ export default function Dashboard() {
       const [leadsRes, statsRes, creditsRes] = await Promise.all([
         fetch(`/api/leads?page=${page}&limit=10${qualityFilter ? `&quality=${qualityFilter}` : ''}`),
         fetch("/api/leads/stats"),
-        fetch("/api/leads/credits")
+        fetch("/api/user/credits")
       ]);
 
       const leadsData = await leadsRes.json();
@@ -134,12 +134,15 @@ export default function Dashboard() {
             ProspectMiner AI
           </h1>
 
-          <div className="glass px-5 py-2.5 rounded-full flex items-center gap-3 font-mono shadow-xl shrink-0">
-            <span className="text-sm font-semibold text-slate-300">BALANCE</span>
-            <div className={`flex items-center gap-2 font-bold ${credits > 0 ? 'text-emerald-400' : 'text-red-400 animate-pulse'}`}>
-               🪙 {credits}
-            </div>
-          </div>
+         <div className={`flex items-center gap-2 font-bold ${
+  credits === null
+    ? 'text-gray-400'
+    : credits > 0
+    ? 'text-emerald-400'
+    : 'text-red-400 animate-pulse'
+}`}>
+   🪙 {credits === null ? "--" : credits}
+</div>
         </motion.div>
 
         <motion.div variants={containerVars} initial="hidden" animate="show">
