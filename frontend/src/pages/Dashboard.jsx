@@ -236,12 +236,12 @@ export default function Dashboard() {
               <select 
                 value={qualityFilter} 
                 onChange={e => { setQualityFilter(e.target.value); setPage(1); }}
-                className="glass px-4 h-11 rounded-xl text-sm outline-none bg-black/50 text-white cursor-pointer"
+                className="glass px-4 h-11 rounded-xl text-sm outline-none bg-white text-white cursor-pointer shadow-lg"
               >
-                 <option value="">All Qualities</option>
-                 <option value="High">High Quality</option>
-                 <option value="Medium">Medium Quality</option>
-                 <option value="Low">Low Quality</option>
+                 <option value="" className="text-black">All Qualities</option>
+                 <option value="High" className="text-black">High Quality</option>
+                 <option value="Medium" className="text-black">Medium Quality</option>
+                 <option value="Low" className="text-black">Low Quality</option>
               </select>
             </div>
 
