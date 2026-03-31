@@ -4,6 +4,7 @@ import cors from "cors";
 
 import leadsRoutes from "./routes/leads.js";
 import analyticsRoutes from "./routes/analytics.js"; // ✅ ADD THIS
+import userRoutes from "./routes/user.js";
 
 import { connectDB } from "./config/db.js";
 
@@ -22,6 +23,7 @@ app.use(cors());
 ========================= */
 app.use("/api/leads", leadsRoutes);
 app.use("/api/analytics", analyticsRoutes); // ✅ NEW
+app.use("/api/user", userRoutes);
 
 /* =========================
    HEALTH CHECK

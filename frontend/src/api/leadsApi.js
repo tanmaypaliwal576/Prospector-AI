@@ -16,3 +16,5 @@ export const startScrape = (query) =>
 
 export const getProgress = (jobId) =>
   API.get(`/leads/progress/${jobId}`);
+
+export const fetchCredits = () => API.get("/user/credits");

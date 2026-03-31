@@ -2,12 +2,14 @@ import express from "express";
 import { scraperQueue } from "../queues/scraper.queue.js";
 import { redisConnection } from "../redis/redis.connection.js";
 import Lead from "../models/Lead.js";
-import { exportToCSV } from "../utils/exporter.js";
+import User from "../models/User.js";
+
+import { exportLeadsToCSV } from "../utils/exporter.js";
 
 const router = express.Router();
 
 /* =========================
-   START SCRAPING
+   START SCRAPING (UPDATED WITH CREDITS)
 ========================= */
 router.post("/search", async (req, res) => {
   try {
@@ -17,6 +19,20 @@ router.post("/search", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Query is required"
+      });
+    }
+
+    // 🔥 CREDIT CHECK (CRITICAL)
+    let user = await User.findOne({ username: "admin" });
+
+    if (!user) {
+      user = await User.create({ username: "admin", credits: 100 });
+    }
+
+    if (user.credits <= 0) {
+      return res.status(403).json({
+        success: false,
+        message: "No credits remaining"
       });
     }
 
@@ -56,17 +72,15 @@ router.get("/", async (req, res) => {
 
     const filter = {};
 
-    // ✅ Only enriched leads (NOW SAFE)
+    // ✅ Only enriched leads
     filter.status = "enriched";
 
-    // ✅ Quality filter
     if (quality) {
       filter.leadQuality = {
         $regex: new RegExp(`^${quality}$`, "i")
       };
     }
 
-    // ✅ Source query
     if (query) {
       filter.sourceQuery = {
         $regex: query,
@@ -74,7 +88,6 @@ router.get("/", async (req, res) => {
       };
     }
 
-    // ✅ Rating filter
     if (minRating || maxRating) {
       filter.rating = {};
       if (minRating) filter.rating.$gte = Number(minRating);
@@ -82,7 +95,6 @@ router.get("/", async (req, res) => {
       filter.rating.$ne = null;
     }
 
-    // ✅ Search filter
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -192,70 +204,30 @@ router.get("/progress/:jobId", async (req, res) => {
 });
 
 /* =========================
-   EXPORT CSV (FINAL)
+   EXPORT CSV
 ========================= */
 router.get("/export/csv", async (req, res) => {
+  await exportLeadsToCSV(res);
+});
+
+/* =========================
+   GET CREDITS (NEW)
+========================= */
+router.get("/credits", async (req, res) => {
   try {
-    const {
-      quality,
-      query,
-      minRating,
-      maxRating,
-      search,
-      limit = 100
-    } = req.query;
+    let user = await User.findOne({ username: "admin" });
 
-    const filter = { status: "enriched" };
-
-    if (quality) {
-      filter.leadQuality = {
-        $regex: new RegExp(`^${quality}$`, "i")
-      };
+    if (!user) {
+      user = await User.create({ username: "admin", credits: 100 });
     }
 
-    if (query) {
-      filter.sourceQuery = {
-        $regex: query,
-        $options: "i"
-      };
-    }
-
-    if (minRating || maxRating) {
-      filter.rating = {};
-      if (minRating) filter.rating.$gte = Number(minRating);
-      if (maxRating) filter.rating.$lte = Number(maxRating);
-      filter.rating.$ne = null;
-    }
-
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { address: { $regex: search, $options: "i" } },
-        { website: { $regex: search, $options: "i" } },
-        { businessType: { $regex: search, $options: "i" } }
-      ];
-    }
-
-    const leads = await Lead.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(Number(limit));
-
-    if (!leads.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No leads found"
-      });
-    }
-
-    const csv = exportToCSV(leads);
-
-    res.header("Content-Type", "text/csv");
-    res.attachment("leads.csv");
-
-    return res.send(csv);
+    res.json({
+      success: true,
+      credits: user.credits
+    });
 
   } catch (error) {
-    console.error("Export error:", error);
+    console.error("Credits error:", error);
     res.status(500).json({
       success: false,
       message: error.message
