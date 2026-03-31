@@ -9,6 +9,7 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 
 import Lead from "../models/Lead.js";
+import User from "../models/User.js";
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -32,6 +33,16 @@ mongoose.connect(process.env.MONGO_URI)
         console.log(`🔍 [SCRAPER] JOB STARTED → ${query}`);
         console.log(`🆔 Job ID: ${jobId}`);
         console.log(`==============================\n`);
+
+        let user = await User.findOne({ username: "admin" });
+        if (!user) {
+          user = await User.create({ username: "admin", credits: 100 });
+        }
+
+        if (user.credits <= 0) {
+          console.log("❌ [SCRAPER] Out of credits. Stopping job.");
+          return;
+        }
 
         const browser = await puppeteer.launch({
           headless: false,
@@ -108,6 +119,12 @@ mongoose.connect(process.env.MONGO_URI)
               )
             );
 
+            // 🔥 DEDUCT CREDITS
+            if (valid.length > 0) {
+              await User.updateOne({ username: "admin" }, { $inc: { credits: -valid.length } });
+              console.log(`💸 Deducted ${valid.length} credits.`);
+            }
+
             console.log("🚀 [SCRAPER] Batch pushed\n");
 
           } catch (err) {
@@ -134,10 +151,16 @@ mongoose.connect(process.env.MONGO_URI)
             await new Promise(r => setTimeout(r, 1500));
           }
 
-          const links = await page.$$eval(
+          let links = await page.$$eval(
             "a.hfpxzc",
             els => els.slice(0, 50).map(e => e.href)
           );
+
+          user = await User.findOne({ username: "admin" });
+          if (links.length > user.credits) {
+            console.log(`⚠️ User only has ${user.credits} credits. Limiting links from ${links.length} to ${user.credits}.`);
+            links = links.slice(0, user.credits);
+          }
 
           console.log(`📊 [SCRAPER] Total links: ${links.length}`);
 
