@@ -2,7 +2,6 @@ import express from "express";
 import { scraperQueue } from "../queues/scraper.queue.js";
 import { redisConnection } from "../redis/redis.connection.js";
 import Lead from "../models/Lead.js";
-import { exportToCSV } from "../utils/exporter.js";
 
 const router = express.Router();
 
@@ -194,73 +193,14 @@ router.get("/progress/:jobId", async (req, res) => {
 /* =========================
    EXPORT CSV (FINAL)
 ========================= */
+
+
+import { exportLeadsToCSV } from "../utils/exporter.js";
+
 router.get("/export/csv", async (req, res) => {
-  try {
-    const {
-      quality,
-      query,
-      minRating,
-      maxRating,
-      search,
-      limit = 100
-    } = req.query;
-
-    const filter = { status: "enriched" };
-
-    if (quality) {
-      filter.leadQuality = {
-        $regex: new RegExp(`^${quality}$`, "i")
-      };
-    }
-
-    if (query) {
-      filter.sourceQuery = {
-        $regex: query,
-        $options: "i"
-      };
-    }
-
-    if (minRating || maxRating) {
-      filter.rating = {};
-      if (minRating) filter.rating.$gte = Number(minRating);
-      if (maxRating) filter.rating.$lte = Number(maxRating);
-      filter.rating.$ne = null;
-    }
-
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { address: { $regex: search, $options: "i" } },
-        { website: { $regex: search, $options: "i" } },
-        { businessType: { $regex: search, $options: "i" } }
-      ];
-    }
-
-    const leads = await Lead.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(Number(limit));
-
-    if (!leads.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No leads found"
-      });
-    }
-
-    const csv = exportToCSV(leads);
-
-    res.header("Content-Type", "text/csv");
-    res.attachment("leads.csv");
-
-    return res.send(csv);
-
-  } catch (error) {
-    console.error("Export error:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
+  await exportLeadsToCSV(res);
 });
+
+
 
 export default router;
