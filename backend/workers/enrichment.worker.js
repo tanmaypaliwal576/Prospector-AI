@@ -66,15 +66,15 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Batch ${batchNumber} → Gemini response received`);
 
+        // 🔥 BULK WRITE (optimized)
+        const bulkOps = [];
+
         for (let i = 0; i < currentBatch.length; i++) {
 
           const { lead, text } = currentBatch[i];
           const aiData = results?.[i];
 
-          if (!aiData) {
-            console.log(`⚠️ Missing AI data`);
-            continue;
-          }
+          if (!aiData) continue;
 
           let emailGuess = null;
 
@@ -88,26 +88,30 @@ mongoose.connect(process.env.MONGO_URI)
             text.length
           );
 
-          // 🔥 FINAL UPDATE (FIXED)
-          await Lead.updateOne(
-            { _id: lead._id },
-            {
-              $set: {
-                services: aiData.services || [],
-                businessType: aiData.businessType || null,
-                description: aiData.description || null,
-                ownerName: aiData.ownerName || null,
-                emailGuess,
-                leadQuality: score,
-
-                enriched: true,
-                enrichmentStatus: "done",
-                status: "enriched" // 🔥 CRITICAL FIX
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: lead._id },
+              update: {
+                $set: {
+                  services: aiData.services || [],
+                  businessType: aiData.businessType || null,
+                  description: aiData.description || null,
+                  ownerName: aiData.ownerName || null,
+                  emailGuess,
+                  leadQuality: score,
+                  enriched: true,
+                  enrichmentStatus: "done",
+                  status: "enriched"
+                }
               }
             }
-          );
+          });
 
           console.log(`✅ Enriched (${score}) → ${lead.website}`);
+        }
+
+        if (bulkOps.length > 0) {
+          await Lead.bulkWrite(bulkOps);
         }
 
         console.log(`🎉 Batch ${batchNumber} COMPLETED\n`);
@@ -125,7 +129,7 @@ mongoose.connect(process.env.MONGO_URI)
                 $set: {
                   enriched: false,
                   enrichmentStatus: "skipped_quota",
-                  status: "failed" // 🔥 FIX
+                  status: "failed"
                 }
               }
             );
@@ -139,7 +143,7 @@ mongoose.connect(process.env.MONGO_URI)
       isProcessing = false;
 
       if (batch.length >= BATCH_SIZE) {
-        await processBatch();
+        processBatch(); // 🔥 non-blocking
       }
     };
 
@@ -155,9 +159,14 @@ mongoose.connect(process.env.MONGO_URI)
 
         const lead = await Lead.findById(leadId);
 
-        if (!lead || !lead.website) return;
+        if (!lead) return;
 
-        // 🔥 Skip already enriched
+        // 🔥 Skip weak leads (saves Gemini)
+        if (!lead.phone && !lead.website) {
+          console.log("🚫 Skipped weak lead");
+          return;
+        }
+
         if (lead.status === "enriched") {
           console.log("⏭️ Already enriched:", lead.website);
           return;
@@ -188,7 +197,8 @@ mongoose.connect(process.env.MONGO_URI)
 
           text = await lightExtract(lead.website);
 
-          if (!text || text.length < 1500) {
+          // 🔥 reduced threshold (faster)
+          if (!text || text.length < 800) {
             console.log("🔁 Using fallback extractor...");
             text = await extractWebsiteText(lead.website);
           }
@@ -198,7 +208,7 @@ mongoose.connect(process.env.MONGO_URI)
           return;
         }
 
-        if (!text || text.length < 1500) {
+        if (!text || text.length < 800) {
           console.log("❌ Skipped (low content)");
           return;
         }
@@ -216,7 +226,7 @@ mongoose.connect(process.env.MONGO_URI)
         }
 
         if (batch.length === BATCH_SIZE) {
-          await processBatch();
+          processBatch(); // 🔥 non-blocking
         }
 
       },
@@ -233,9 +243,9 @@ mongoose.connect(process.env.MONGO_URI)
     setInterval(async () => {
       if (batch.length > 0 && !isProcessing) {
         console.log("⏳ Flushing remaining batch...");
-        await processBatch();
+        processBatch(); // 🔥 faster flush
       }
-    }, 10000);
+    }, 2000); // 🔥 reduced from 10000
 
     /* =========================
        HEARTBEAT

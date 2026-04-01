@@ -29,7 +29,7 @@ export default function Dashboard() {
       const [leadsRes, statsRes, creditsRes] = await Promise.all([
         fetch(`/api/leads?page=${page}&limit=10${qualityFilter ? `&quality=${qualityFilter}` : ''}`),
         fetch("/api/leads/stats"),
-        fetch("/api/user/credits")
+        fetch("/api/leads/credits")
       ]);
 
       const leadsData = await leadsRes.json();
@@ -52,7 +52,7 @@ export default function Dashboard() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const creditsRes = await fetch("/api/leads/credits");
+        const creditsRes = await fetch("/api/user/credits");
         const creditsData = await creditsRes.json();
         if (creditsData.success) setCredits(creditsData.credits);
       } catch (e) { /* silent */ }
@@ -106,7 +106,7 @@ export default function Dashboard() {
           loadAll(); // Refresh table when done
         }
       }
-    }, 1500);
+    }, 500);
 
     return () => clearInterval(interval);
   }, [jobId]);
