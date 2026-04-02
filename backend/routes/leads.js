@@ -158,10 +158,12 @@ router.get("/stats", async (req, res) => {
     };
 
     stats.forEach((s) => {
-      if (!s._id || s._id.toLowerCase() === 'low') {
+      if (s._id === "High") {
+        formatted.High += s.count;
+      } else if (s._id === "Medium") {
+        formatted.Medium += s.count;
+      } else if (s._id === "Low" || !s._id || s._id.toLowerCase() === "low") {
         formatted.Low += s.count;
-      } else if (formatted[s._id] !== undefined) {
-        formatted[s._id] += s.count;
       }
     });
 
@@ -189,13 +191,60 @@ router.get("/progress/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
 
-    const total = await redisConnection.get(`scrape:${jobId}:total`);
-    const done = await redisConnection.get(`scrape:${jobId}:done`);
+    // ✅ SCRAPING PROGRESS
+    const scrapeTotal = Number(await redisConnection.get(`scrape:${jobId}:total`)) || 0;
+    const scrapeDone = Number(await redisConnection.get(`scrape:${jobId}:done`)) || 0;
 
-    res.json({
+    // ✅ ENRICHMENT PROGRESS
+    const enrichTotal = Number(await redisConnection.get(`enrichment:${jobId}:total`)) || 0;
+    const enrichDone = Number(await redisConnection.get(`enrichment:${jobId}:done`)) || 0;
+
+    // 🔥 PHASE 1: SCRAPING
+    if (scrapeTotal > 0 && scrapeDone < scrapeTotal) {
+      return res.json({
+        success: true,
+        phase: "scraping",
+        total: scrapeTotal,
+        done: scrapeDone
+      });
+    }
+
+    // 🔥 PHASE 2: ENRICHING
+    if (enrichTotal > 0 && enrichDone < enrichTotal) {
+      return res.json({
+        success: true,
+        phase: "enriching",
+        total: enrichTotal,
+        done: enrichDone
+      });
+    }
+
+    // 🔥 PHASE 3: COMPLETED
+    if (scrapeTotal > 0 && scrapeDone >= scrapeTotal && enrichTotal > 0 && enrichDone >= enrichTotal) {
+      return res.json({
+        success: true,
+        phase: "completed",
+        total: enrichTotal,
+        done: enrichDone
+      });
+    }
+
+    // If scraping finished but no valid leads to enrich
+    if (scrapeTotal > 0 && scrapeDone >= scrapeTotal && enrichTotal === 0) {
+      return res.json({
+         success: true,
+         phase: "completed",
+         total: scrapeTotal,
+         done: scrapeDone
+      });
+    }
+
+    // 🔥 FALLBACK (initial state)
+    return res.json({
       success: true,
-      total: Number(total) || 0,
-      done: Number(done) || 0
+      phase: "starting",
+      total: 0,
+      done: 0
     });
 
   } catch (error) {
@@ -214,29 +263,6 @@ router.get("/export/csv", async (req, res) => {
   await exportLeadsToCSV(res);
 });
 
-/* =========================
-   GET CREDITS (NEW)
-========================= */
-router.get("/credits", async (req, res) => {
-  try {
-    let user = await User.findOne({ username: "admin" });
 
-    if (!user) {
-      user = await User.create({ username: "admin", credits: 100 });
-    }
-
-    res.json({
-      success: true,
-      credits: user.credits
-    });
-
-  } catch (error) {
-    console.error("Credits error:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
 
 export default router;

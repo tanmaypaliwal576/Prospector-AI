@@ -1,19 +1,16 @@
-export function calculateLeadScore(data, textLength) {
+export function calculateLeadScore(data, textLength = 0) {
+  const hasPhone = !!data.phone;
+  const hasWebsite = !!(data.website && !data.website.includes("no-website"));
+  const hasDescription = !!(data.description && data.description.length > 10);
 
-  let score = 0;
+  if (hasPhone && hasWebsite && hasDescription) {
+    return "High";
+  }
 
-  if (data.phone) score += 2;
-  if (data.emailGuess) score += 2;
+  // Make scoring more forgiving to reduce excessive "Low" leads
+  if (hasPhone || hasWebsite) {
+    return "Medium";
+  }
 
-  if (data.services && data.services.length >= 3) score += 2;
-  if (data.description && data.description.length > 80) score += 1;
-
-  if (textLength > 5000) score += 2;
-  else if (textLength > 2500) score += 1;
-
-  if (!data.services || data.services.length === 0) score -= 1;
-
-  if (score >= 5) return "High";
-  if (score >= 3) return "Medium";
   return "Low";
 }

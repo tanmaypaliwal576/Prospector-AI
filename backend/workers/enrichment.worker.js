@@ -68,11 +68,27 @@ mongoose.connect(process.env.MONGO_URI)
 
         for (let i = 0; i < currentBatch.length; i++) {
 
-          const { lead, text } = currentBatch[i];
+          const { lead, text, jobId } = currentBatch[i];
           const aiData = results?.[i];
 
           if (!aiData) {
             console.log(`⚠️ Missing AI data`);
+            const fallbackScore = calculateLeadScore(
+              { phone: lead.phone, website: lead.website },
+              text.length
+            );
+            await Lead.updateOne(
+              { _id: lead._id },
+              {
+                $set: {
+                  leadQuality: fallbackScore,
+                  enriched: true,
+                  enrichmentStatus: "done",
+                  status: "enriched"
+                }
+              }
+            );
+            if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
             continue;
           }
 
@@ -84,9 +100,11 @@ mongoose.connect(process.env.MONGO_URI)
           } catch {}
 
           const score = calculateLeadScore(
-            { ...aiData, phone: lead.phone, emailGuess },
+            { ...aiData, phone: lead.phone, emailGuess, website: lead.website },
             text.length
           );
+
+          console.log(`📊 Lead: ${lead.website} → Score: ${score} phone : ${lead.phone}`);
 
           // 🔥 FINAL UPDATE (FIXED)
           await Lead.updateOne(
@@ -108,6 +126,7 @@ mongoose.connect(process.env.MONGO_URI)
           );
 
           console.log(`✅ Enriched (${score}) → ${lead.website}`);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
         }
 
         console.log(`🎉 Batch ${batchNumber} COMPLETED\n`);
@@ -129,6 +148,7 @@ mongoose.connect(process.env.MONGO_URI)
                 }
               }
             );
+            if (item.jobId) await redisConnection.incr(`enrichment:${item.jobId}:done`);
           }
 
         } else {
@@ -138,8 +158,8 @@ mongoose.connect(process.env.MONGO_URI)
 
       isProcessing = false;
 
-      if (batch.length >= BATCH_SIZE) {
-        await processBatch();
+      if (batch.length > 0) {
+        processBatch().catch(console.error);
       }
     };
 
@@ -151,30 +171,41 @@ mongoose.connect(process.env.MONGO_URI)
 
       async (job) => {
 
-        const { leadId } = job.data;
+        const { leadId, jobId } = job.data;
 
         const lead = await Lead.findById(leadId);
 
-        if (!lead || !lead.website) return;
+        if (!lead || !lead.website) {
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
+          return;
+        }
 
         // 🔥 Skip already enriched
         if (lead.status === "enriched") {
           console.log("⏭️ Already enriched:", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (lead.enrichmentStatus === "skipped_quota") {
           console.log("⏭️ Skipped (quota):", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (seenWebsites.has(lead.website)) {
           console.log("♻️ Duplicate skipped:", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (badDomains.some(d => lead.website.includes(d))) {
           console.log("🚫 Aggregator skipped:", lead.website);
+          const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, 0);
+          await Lead.updateOne({ _id: lead._id }, {
+              $set: { leadQuality: score, enriched: true, enrichmentStatus: "done", status: "enriched" }
+          });
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
@@ -195,11 +226,25 @@ mongoose.connect(process.env.MONGO_URI)
 
         } catch (err) {
           console.log("❌ Extraction failed:", err.message);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (!text || text.length < 1500) {
-          console.log("❌ Skipped (low content)");
+          console.log("❌ Low content, bypassing Gemini, scoring manually");
+          const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, text?.length || 0);
+          await Lead.updateOne(
+            { _id: lead._id },
+            {
+              $set: {
+                leadQuality: score,
+                enriched: true,
+                enrichmentStatus: "done",
+                status: "enriched"
+              }
+            }
+          );
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
@@ -207,16 +252,21 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Valid (${text.length} chars)`);
 
-        if (batch.length < BATCH_SIZE) {
-          batch.push({ lead, text });
-          console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
-        } else {
-          console.log("⏳ Batch full, waiting...");
-          return;
-        }
+        batch.push({ lead, text, jobId });
+        console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
 
-        if (batch.length === BATCH_SIZE) {
-          await processBatch();
+        if (batch.length >= BATCH_SIZE) {
+          if (!isProcessing) {
+            await processBatch();
+          } else {
+            // Apply backpressure so worker stops pulling from Redis while waiting
+            while (isProcessing) {
+              await new Promise(r => setTimeout(r, 500));
+            }
+            if (batch.length >= BATCH_SIZE && !isProcessing) {
+              await processBatch();
+            }
+          }
         }
 
       },
