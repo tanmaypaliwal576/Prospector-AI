@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
+import { calculateLeadScore } from "../utils/leadScoring.js";
 
 dotenv.config();
 puppeteer.use(StealthPlugin());
@@ -99,7 +100,11 @@ mongoose.connect(process.env.MONGO_URI)
                 } else {
                   return await Lead.create({
                     ...l,
-                    website: `no-website-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                    website: `no-website-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    leadQuality: calculateLeadScore(l, 0),
+                    status: "enriched",
+                    enriched: true,
+                    enrichmentStatus: "done"
                   });
                 }
               })
@@ -111,9 +116,13 @@ mongoose.connect(process.env.MONGO_URI)
 
             console.log(`📤 Sending ${valid.length} to enrichment`);
 
+            if (valid.length > 0) {
+              await redisConnection.incrby(`enrichment:${jobId}:total`, valid.length);
+            }
+
             await Promise.all(
               valid.map(l =>
-                enrichmentQueue.add("enrich", { leadId: l._id })
+                enrichmentQueue.add("enrich", { leadId: l._id, jobId })
               )
             );
 
@@ -151,82 +160,85 @@ mongoose.connect(process.env.MONGO_URI)
 
           await page.waitForSelector("a.hfpxzc");
 
-          for (let i = 0; i < 15; i++) {
+          let links = [];
+          for (let i = 0; i < 30; i++) {
             await page.evaluate(() => {
               const el = document.querySelector('div[role="feed"]');
-              if (el) el.scrollBy(0, 3000);
+              if (el) el.scrollBy(0, 5000);
             });
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1000));
+            links = await page.$$eval("a.hfpxzc", els => els.map(e => e.href));
+            if (links.length >= 50) break;
           }
-
-          const links = await page.$$eval(
-            "a.hfpxzc",
-            els => els.slice(0, 50).map(e => e.href)
-          );
-
+          
+          links = links.slice(0, 50);
           console.log(`📊 Total links: ${links.length}`);
 
           await redisConnection.set(`scrape:${jobId}:total`, links.length);
           await redisConnection.set(`scrape:${jobId}:done`, 0);
 
-          for (const link of links) {
+          const CHUNK_SIZE = 5;
+          
+          for (let i = 0; i < links.length; i += CHUNK_SIZE) {
+            const chunk = links.slice(i, i + CHUNK_SIZE);
 
-            const p = await browser.newPage();
+            await Promise.all(chunk.map(async (link) => {
+              const p = await browser.newPage();
+              try {
+                let currentUser = await User.findOne({ username: "admin" });
+                if (currentUser && currentUser.credits <= 0) return;
 
-            try {
+                await p.goto(link, { waitUntil: "domcontentloaded", timeout: 15000 });
+                await p.waitForSelector("h1", { timeout: 5000 });
 
-              user = await User.findOne({ username: "admin" });
+                const name = await p.$eval("h1", el => el.innerText);
 
-              if (user.credits <= 0) {
-                console.log("❌ Credits exhausted. Stopping scraping.");
-                break;
-              }
+                let address = await p.$eval(
+                  'button[data-item-id="address"]',
+                  el => el.innerText
+                ).catch(() => null);
+                if (address) address = address.replace(/[\u200B-\u200F\u202A-\u202E\uE000-\uF8FF\uFFFD]/g, "").replace(/[^\p{L}\p{N}\p{P}\p{Z}+=]/gu, "").trim();
 
-              await p.goto(link, { timeout: 30000 });
-              await p.waitForSelector("h1");
+                let phone = await p.$eval(
+                  'button[data-item-id^="phone"]',
+                  el => el.innerText
+                ).catch(() => null);
+                if (phone) phone = phone.replace(/[^\d+\-\s()]/g, "").trim();
 
-              const name = await p.$eval("h1", el => el.innerText);
-
-              let address = await p.$eval(
-                'button[data-item-id="address"]',
-                el => el.innerText
-              ).catch(() => null);
-              if (address) address = address.replace(/[\u200B-\u200F\u202A-\u202E\uE000-\uF8FF\uFFFD]/g, "").replace(/[^\p{L}\p{N}\p{P}\p{Z}+=]/gu, "").trim();
-
-              let phone = await p.$eval(
-                'button[data-item-id^="phone"]',
-                el => el.innerText
-              ).catch(() => null);
-              if (phone) phone = phone.replace(/[^\d+\-\s()]/g, "").trim();
-
-              let website = await p.$eval(
-                'a[data-item-id="authority"]',
-                el => el.href
-              ).catch(() => null);
-
-              if (!website) {
-                website = await p.$eval(
-                  'a[aria-label^="Website"]',
+                let website = await p.$eval(
+                  'a[data-item-id="authority"]',
                   el => el.href
                 ).catch(() => null);
+
+                if (!website) {
+                  website = await p.$eval(
+                    'a[aria-label^="Website"]',
+                    el => el.href
+                  ).catch(() => null);
+                }
+
+                batch.push({ name, address, phone, website });
+
+              } catch (err) {
+                // Silently ignore individual page extraction failures to keep scraper going
+              } finally {
+                await p.close().catch(() => {});
+                await redisConnection.incr(`scrape:${jobId}:done`);
               }
+            }));
 
-              batch.push({ name, address, phone, website });
+            // Re-check credits after chunk
+            user = await User.findOne({ username: "admin" });
+            if (user && user.credits <= 0) {
+              console.log("❌ Credits exhausted. Stopping scraping.");
+              break;
+            }
 
-              if (batch.length === BATCH_SIZE) {
-                const currentBatch = [...batch];
-                batch = [];
-
-                const shouldContinue = await processBatch(currentBatch);
-
-                if (!shouldContinue) break;
-              }
-
-            } catch (err) {
-              console.log("❌ Extraction failed:", err.message);
-            } finally {
-              await p.close();
-              await redisConnection.incr(`scrape:${jobId}:done`);
+            if (batch.length > 0) {
+              const currentBatch = [...batch];
+              batch = [];
+              const shouldContinue = await processBatch(currentBatch);
+              if (!shouldContinue) break;
             }
           }
 

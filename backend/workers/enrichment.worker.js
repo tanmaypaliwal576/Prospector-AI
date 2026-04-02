@@ -66,15 +66,31 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Batch ${batchNumber} → Gemini response received`);
 
-        // 🔥 BULK WRITE (optimized)
-        const bulkOps = [];
-
         for (let i = 0; i < currentBatch.length; i++) {
 
-          const { lead, text } = currentBatch[i];
+          const { lead, text, jobId } = currentBatch[i];
           const aiData = results?.[i];
 
-          if (!aiData) continue;
+          if (!aiData) {
+            console.log(`⚠️ Missing AI data`);
+            const fallbackScore = calculateLeadScore(
+              { phone: lead.phone, website: lead.website },
+              text.length
+            );
+            await Lead.updateOne(
+              { _id: lead._id },
+              {
+                $set: {
+                  leadQuality: fallbackScore,
+                  enriched: true,
+                  enrichmentStatus: "done",
+                  status: "enriched"
+                }
+              }
+            );
+            if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
+            continue;
+          }
 
           let emailGuess = null;
 
@@ -84,34 +100,33 @@ mongoose.connect(process.env.MONGO_URI)
           } catch {}
 
           const score = calculateLeadScore(
-            { ...aiData, phone: lead.phone, emailGuess },
+            { ...aiData, phone: lead.phone, emailGuess, website: lead.website },
             text.length
           );
 
-          bulkOps.push({
-            updateOne: {
-              filter: { _id: lead._id },
-              update: {
-                $set: {
-                  services: aiData.services || [],
-                  businessType: aiData.businessType || null,
-                  description: aiData.description || null,
-                  ownerName: aiData.ownerName || null,
-                  emailGuess,
-                  leadQuality: score,
-                  enriched: true,
-                  enrichmentStatus: "done",
-                  status: "enriched"
-                }
+          console.log(`📊 Lead: ${lead.website} → Score: ${score} phone : ${lead.phone}`);
+
+          // 🔥 FINAL UPDATE (FIXED)
+          await Lead.updateOne(
+            { _id: lead._id },
+            {
+              $set: {
+                services: aiData.services || [],
+                businessType: aiData.businessType || null,
+                description: aiData.description || null,
+                ownerName: aiData.ownerName || null,
+                emailGuess,
+                leadQuality: score,
+
+                enriched: true,
+                enrichmentStatus: "done",
+                status: "enriched" // 🔥 CRITICAL FIX
               }
             }
-          });
+          );
 
           console.log(`✅ Enriched (${score}) → ${lead.website}`);
-        }
-
-        if (bulkOps.length > 0) {
-          await Lead.bulkWrite(bulkOps);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
         }
 
         console.log(`🎉 Batch ${batchNumber} COMPLETED\n`);
@@ -129,10 +144,11 @@ mongoose.connect(process.env.MONGO_URI)
                 $set: {
                   enriched: false,
                   enrichmentStatus: "skipped_quota",
-                  status: "failed"
+                  status: "failed" // 🔥 FIX
                 }
               }
             );
+            if (item.jobId) await redisConnection.incr(`enrichment:${item.jobId}:done`);
           }
 
         } else {
@@ -142,8 +158,8 @@ mongoose.connect(process.env.MONGO_URI)
 
       isProcessing = false;
 
-      if (batch.length >= BATCH_SIZE) {
-        processBatch(); // 🔥 non-blocking
+      if (batch.length > 0) {
+        processBatch().catch(console.error);
       }
     };
 
@@ -155,35 +171,41 @@ mongoose.connect(process.env.MONGO_URI)
 
       async (job) => {
 
-        const { leadId } = job.data;
+        const { leadId, jobId } = job.data;
 
         const lead = await Lead.findById(leadId);
 
-        if (!lead) return;
-
-        // 🔥 Skip weak leads (saves Gemini)
-        if (!lead.phone && !lead.website) {
-          console.log("🚫 Skipped weak lead");
+        if (!lead || !lead.website) {
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
+        // 🔥 Skip already enriched
         if (lead.status === "enriched") {
           console.log("⏭️ Already enriched:", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (lead.enrichmentStatus === "skipped_quota") {
           console.log("⏭️ Skipped (quota):", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (seenWebsites.has(lead.website)) {
           console.log("♻️ Duplicate skipped:", lead.website);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
         if (badDomains.some(d => lead.website.includes(d))) {
           console.log("🚫 Aggregator skipped:", lead.website);
+          const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, 0);
+          await Lead.updateOne({ _id: lead._id }, {
+              $set: { leadQuality: score, enriched: true, enrichmentStatus: "done", status: "enriched" }
+          });
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
@@ -197,19 +219,32 @@ mongoose.connect(process.env.MONGO_URI)
 
           text = await lightExtract(lead.website);
 
-          // 🔥 reduced threshold (faster)
-          if (!text || text.length < 800) {
+          if (!text || text.length < 1500) {
             console.log("🔁 Using fallback extractor...");
             text = await extractWebsiteText(lead.website);
           }
 
         } catch (err) {
           console.log("❌ Extraction failed:", err.message);
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
-        if (!text || text.length < 800) {
-          console.log("❌ Skipped (low content)");
+        if (!text || text.length < 1500) {
+          console.log("❌ Low content, bypassing Gemini, scoring manually");
+          const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, text?.length || 0);
+          await Lead.updateOne(
+            { _id: lead._id },
+            {
+              $set: {
+                leadQuality: score,
+                enriched: true,
+                enrichmentStatus: "done",
+                status: "enriched"
+              }
+            }
+          );
+          if (jobId) await redisConnection.incr(`enrichment:${jobId}:done`);
           return;
         }
 
@@ -217,16 +252,21 @@ mongoose.connect(process.env.MONGO_URI)
 
         console.log(`✅ Valid (${text.length} chars)`);
 
-        if (batch.length < BATCH_SIZE) {
-          batch.push({ lead, text });
-          console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
-        } else {
-          console.log("⏳ Batch full, waiting...");
-          return;
-        }
+        batch.push({ lead, text, jobId });
+        console.log(`📦 Batch size: ${batch.length}/${BATCH_SIZE}`);
 
-        if (batch.length === BATCH_SIZE) {
-          processBatch(); // 🔥 non-blocking
+        if (batch.length >= BATCH_SIZE) {
+          if (!isProcessing) {
+            await processBatch();
+          } else {
+            // Apply backpressure so worker stops pulling from Redis while waiting
+            while (isProcessing) {
+              await new Promise(r => setTimeout(r, 500));
+            }
+            if (batch.length >= BATCH_SIZE && !isProcessing) {
+              await processBatch();
+            }
+          }
         }
 
       },
@@ -243,9 +283,9 @@ mongoose.connect(process.env.MONGO_URI)
     setInterval(async () => {
       if (batch.length > 0 && !isProcessing) {
         console.log("⏳ Flushing remaining batch...");
-        processBatch(); // 🔥 faster flush
+        await processBatch();
       }
-    }, 2000); // 🔥 reduced from 10000
+    }, 10000);
 
     /* =========================
        HEARTBEAT

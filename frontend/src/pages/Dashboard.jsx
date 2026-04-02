@@ -29,7 +29,7 @@ export default function Dashboard() {
       const [leadsRes, statsRes, creditsRes] = await Promise.all([
         fetch(`/api/leads?page=${page}&limit=10${qualityFilter ? `&quality=${qualityFilter}` : ''}`),
         fetch("/api/leads/stats"),
-        fetch("/api/leads/credits")
+        fetch("/api/user/credits")
       ]);
 
       const leadsData = await leadsRes.json();
@@ -100,7 +100,7 @@ export default function Dashboard() {
         setProgress(data);
 
         // Completion logic
-        if (data.total > 0 && data.done >= data.total) {
+        if (data.phase === "completed") {
           clearInterval(interval);
           setJobId(null);
           loadAll(); // Refresh table when done
@@ -201,18 +201,22 @@ export default function Dashboard() {
                 <div className="flex justify-between items-center mb-3 text-sm font-medium">
                   <div className="flex items-center gap-2 text-indigo-300">
                      <RefreshCw size={16} className="animate-spin" />
-                     Scanning Area & Analyzing Maps...
+                     {progress.phase === "enriching" 
+                        ? "AI Extraction & Finalizing Insights..." 
+                        : "Scanning Area & Analyzing Maps..."}
                   </div>
-                  <div className="text-gray-300 font-mono">
-                    {progress.done} / {progress.total}
-                  </div>
+                  {progress.phase !== "enriching" && (
+                    <div className="text-gray-300 font-mono">
+                      {progress.done} / {progress.total}
+                    </div>
+                  )}
                 </div>
 
                 <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden border border-white/5 relative">
                   <motion.div
                     className="absolute top-0 left-0 bottom-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 bg-[length:200%_auto] animate-[animatedgradient_2s_linear_infinite]"
                     initial={{ width: 0 }}
-                    animate={{ width: `${percent}%` }}
+                    animate={{ width: progress.phase === "enriching" ? "100%" : `${percent}%` }}
                     transition={{ ease: "easeOut", duration: 0.5 }}
                   />
                 </div>

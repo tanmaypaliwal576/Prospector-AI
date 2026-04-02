@@ -1,31 +1,16 @@
-export function calculateLeadScore(data, textLength) {
-  let score = 0;
+export function calculateLeadScore(data, textLength = 0) {
+  const hasPhone = !!data.phone;
+  const hasWebsite = !!(data.website && !data.website.includes("no-website"));
+  const hasDescription = !!(data.description && data.description.length > 10);
 
-  // 🔥 Core signals (most reliable)
-  if (data.phone) score += 2;
-
-  if (data.rating >= 4) score += 2;
-  else if (data.rating >= 3.5) score += 1;
-
-  if (data.reviews >= 100) score += 2;
-  else if (data.reviews >= 20) score += 1;
-
-  // ⚠️ Website (less strict now)
-  if (data.website && !data.website.includes("no-website")) {
-    score += 1;
+  if (hasPhone && hasWebsite && hasDescription) {
+    return "High";
   }
 
-  // 📄 Content quality (relaxed)
-  if (data.description && data.description.length > 25) {
-    score += 1;
+  // Make scoring more forgiving to reduce excessive "Low" leads
+  if (hasPhone || hasWebsite) {
+    return "Medium";
   }
 
-  if (textLength > 800) {
-    score += 1;
-  }
-
-  // 🎯 Final classification (adjusted)
-  if (score >= 2) return "High";
-  if (score >= 1) return "Medium";
-  return "Basic";
+  return "Low";
 }

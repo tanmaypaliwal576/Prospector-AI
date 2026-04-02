@@ -52,10 +52,8 @@ async function puppeteerExtract(url) {
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 25000
+      timeout: 10000
     });
-
-    await new Promise(r => setTimeout(r, 3000));
 
     const text = await page.evaluate(() => {
       document.querySelectorAll("script,style,noscript").forEach(el => el.remove());
