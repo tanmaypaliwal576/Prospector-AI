@@ -83,8 +83,12 @@ export default function Dashboard() {
 
   /* ================= EXPORT ================= */
 
-  const handleExport = async () => {
+  const handleExportCSV = async () => {
     window.location.href = "/api/leads/export/csv";
+  };
+
+  const handleExportExcel = async () => {
+    window.location.href = "/api/leads/export/excel";
   };
 
   /* ================= PROGRESS ================= */
@@ -255,12 +259,20 @@ export default function Dashboard() {
               </select>
             </div>
 
-            <button
-              onClick={handleExport}
-              className="glass px-5 h-11 flex items-center justify-center gap-2 rounded-xl text-sm hover:bg-white/10 transition-colors font-medium border border-indigo-500/30 text-indigo-100 shadow-[0_0_15px_rgba(99,102,241,0.1)] w-full md:w-auto"
-            >
-              <Download size={16} /> Export CSV
-            </button>
+            <div className="flex gap-2 w-full md:w-auto">
+              <button
+                onClick={handleExportCSV}
+                className="glass px-5 h-11 flex items-center justify-center gap-2 rounded-xl text-sm hover:bg-white/10 transition-colors font-medium border border-indigo-500/30 text-indigo-100 shadow-[0_0_15px_rgba(99,102,241,0.1)] w-full md:w-auto whitespace-nowrap"
+              >
+                <Download size={16} /> Export CSV
+              </button>
+              <button
+                onClick={handleExportExcel}
+                className="glass px-5 h-11 flex items-center justify-center gap-2 rounded-xl text-sm hover:bg-white/10 transition-colors font-medium border border-[#3e8b5d]/50 text-[#8effba] shadow-[0_0_15px_rgba(62,139,93,0.15)] w-full md:w-auto whitespace-nowrap"
+              >
+                <Download size={16} /> Export Excel
+              </button>
+            </div>
           </motion.div>
 
           {/* TABLE */}
