@@ -4,7 +4,7 @@ import { redisConnection } from "../redis/redis.connection.js";
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
 
-import { exportLeadsToCSV } from "../utils/exporter.js";
+import { exportLeadsToCSV, exportLeadsToExcel } from "../utils/exporter.js";
 
 const router = express.Router();
 
@@ -261,6 +261,13 @@ router.get("/progress/:jobId", async (req, res) => {
 ========================= */
 router.get("/export/csv", async (req, res) => {
   await exportLeadsToCSV(res);
+});
+
+/* =========================
+   EXPORT EXCEL
+========================= */
+router.get("/export/excel", async (req, res) => {
+  await exportLeadsToExcel(res);
 });
 
 
