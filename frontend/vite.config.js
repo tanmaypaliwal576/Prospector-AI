@@ -12,7 +12,7 @@ export default defineConfig({
         changeOrigin: true,
         configure: (proxy, options) => {
           proxy.on('error', (err, req, res) => {
-            if (err.code === 'ECONNREFUSED') {
+            if (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET') {
               // Silently handle the error during backend restarts
               if (res && !res.headersSent) {
                 res.writeHead(502, { 'Content-Type': 'application/json' });

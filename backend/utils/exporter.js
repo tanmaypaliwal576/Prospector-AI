@@ -33,8 +33,6 @@ function truncate(text, max = 120) {
  */
 export const exportLeadsToCSV = async (res) => {
   try {
-    const leads = await Lead.find({}).lean();
-
     // ✅ Clean readable headers
     const headers = [
       "Name",
@@ -59,9 +57,11 @@ export const exportLeadsToCSV = async (res) => {
     // Write header row
     res.write(headers + "\n");
 
-    // Write data rows
-    for (const lead of leads) {
+    const cursor = Lead.find({}).lean().cursor();
+    let count = 0;
 
+    // Write data rows progressively
+    for await (const lead of cursor) {
       const row = [
         safeCSV(lead.name),
         safeCSV(lead.website),
@@ -76,14 +76,19 @@ export const exportLeadsToCSV = async (res) => {
       ].join(",");
 
       res.write(row + "\n");
+      count++;
     }
 
     res.end();
 
-    console.log(`📤 CSV Exported: ${leads.length} leads`);
+    console.log(`📤 CSV Exported: ${count} leads`);
 
   } catch (err) {
     console.error("❌ CSV Export Error:", err);
-    res.status(500).json({ error: "CSV export failed" });
+    if (!res.headersSent) {
+      res.status(500).json({ error: "CSV export failed" });
+    } else {
+      res.end();
+    }
   }
 };

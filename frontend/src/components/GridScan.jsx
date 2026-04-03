@@ -24,7 +24,7 @@ export default function SplineCard() {
 
           {/* ✅ Updated Description */}
          <p className="mt-5 text-gray-300 max-w-lg leading-[1.8] text-lg">
-  Discover high-quality leads, extract business data, and automate your prospecting workflow — all in one place.
+  Discover High-Quality Leads, Extract Business Data, and Automate your Prospecting Workflow — All in One Place.
 </p>
           {/* Button */}
           <div className="mt-8">
@@ -39,7 +39,7 @@ export default function SplineCard() {
               </span>
 
               <span className="relative z-10">
-                Get Started
+               Start Scarping
               </span>
             </button>
           </div>

@@ -1,7 +1,7 @@
 import SplineCard from "../components/GridScan"
 function App() {
   return (
-    <div className="p-10 bg-black min-h-screen">
+    <div className="bg-black w-full h-screen overflow-hidden">
       <SplineCard />
     </div>
   );

@@ -124,15 +124,18 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen text-white overflow-hidden relative selection:bg-indigo-500/30">
-      
+    <div className="min-h-screen text-white overflow-hidden relative selection:bg-indigo-500/30 bg-black">
+  
+      {/* Background glow */}
+      <div className="absolute -top-40 left-0 md:left-60 md:-top-20 w-[600px] h-[600px] bg-white opacity-10 blur-3xl rounded-full pointer-events-none"></div>
+
       <div className="max-w-6xl mx-auto px-6 py-10 relative z-10">
 
         {/* HEADER */}
         <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="flex justify-between items-center mb-10 pb-6 border-b border-white/10">
-          <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-purple-500 to-pink-500">
-            ProspectMiner AI
-          </h1>
+        <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-gray-300 to-gray-100">
+  ProspectMiner AI
+</h1>
 
          <div className={`flex items-center gap-2 font-bold ${
   credits === null
@@ -412,6 +415,7 @@ export default function Dashboard() {
       </AnimatePresence>
 
     </div>
+    
   );
 }
 
