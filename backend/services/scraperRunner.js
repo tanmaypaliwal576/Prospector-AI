@@ -1,4 +1,5 @@
 import puppeteer from "puppeteer-extra";
+import { executablePath } from "puppeteer";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
@@ -124,17 +125,35 @@ export async function runScraperJob(query, jobId) {
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
-        "--disable-gpu"
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--lang=en-US,en"
       ]
     });
 
+    console.log(`🚀 [SCRAPER] Launching job for query: "${query}" (Job ID: ${jobId})`);
+
     const page = await browser.newPage();
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+
     await page.goto(
-      `https://www.google.com/maps/search/${encodeURIComponent(query)}`,
-      { waitUntil: "networkidle2", timeout: 60000 }
+      `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`,
+      { waitUntil: "domcontentloaded", timeout: 60000 }
     );
 
-    await page.waitForSelector("a.hfpxzc", { timeout: 15000 }).catch(() => {});
+    // Auto-accept consent if redirected to consent page
+    if (page.url().includes("consent.google.com")) {
+      console.log("⚠️ Google consent page detected, bypassing...");
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const acceptBtn = btns.find(b => b.textContent.includes('Accept all') || b.textContent.includes('I agree'));
+        if (acceptBtn) acceptBtn.click();
+      });
+      await new Promise(r => setTimeout(r, 2500));
+    }
+
+    await page.waitForSelector("a[href*='/maps/place'], a.hfpxzc", { timeout: 15000 }).catch(() => {});
 
     // Scroll and extract at least 35 place links (aiming for 30+ leads)
     let links = [];
@@ -157,14 +176,14 @@ export async function runScraperJob(query, jobId) {
 
       await new Promise(r => setTimeout(r, 1200));
 
-      links = await page.$$eval('a.hfpxzc, a[href*="/maps/place"]', els => {
-        const set = new Set();
-        els.forEach(e => {
-          if (e.href && e.href.includes('/maps/place')) {
-            set.add(e.href);
+      links = await page.evaluate(() => {
+        const hrefs = new Set();
+        document.querySelectorAll('a[href*="/maps/place"], a.hfpxzc').forEach(el => {
+          if (el.href && el.href.includes('/maps/place')) {
+            hrefs.add(el.href);
           }
         });
-        return Array.from(set);
+        return Array.from(hrefs);
       }).catch(() => []);
 
       if (links.length >= TARGET_COUNT) {
@@ -180,9 +199,11 @@ export async function runScraperJob(query, jobId) {
     }
 
     links = links.slice(0, 35);
+    console.log(`📊 [SCRAPER] Collected ${links.length} place links for "${query}"`);
     jobStore.setScrapeTotal(jobId, links.length);
 
     if (links.length === 0) {
+      console.log("⚠️ [SCRAPER] 0 links found. Job completed.");
       jobStore.setPhase(jobId, "completed");
       return;
     }
@@ -197,6 +218,9 @@ export async function runScraperJob(query, jobId) {
       await Promise.all(chunk.map(async (link) => {
         const p = await browser.newPage();
         try {
+          await p.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+          await p.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+
           const currentUser = await User.findOne({ username: "admin" });
           if (currentUser && currentUser.credits <= 0) return;
 
@@ -282,6 +306,7 @@ export async function runScraperJob(query, jobId) {
 
     // Process enrichment phase
     if (leadsToEnrich.length > 0) {
+      console.log(`✨ [SCRAPER] Enriching ${leadsToEnrich.length} valid leads...`);
       jobStore.incEnrichTotal(jobId, leadsToEnrich.length);
       jobStore.setPhase(jobId, "enriching");
 
