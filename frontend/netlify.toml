@@ -1,0 +1,16 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Proxy /api/* requests to live Render backend
+[[redirects]]
+  from = "/api/*"
+  to = "https://prospector-ai-qzg1.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA Routing: Redirect clean routes to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
