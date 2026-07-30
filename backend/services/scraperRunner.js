@@ -8,6 +8,7 @@ import { extractWebsiteText } from "../utils/website.extractor.js";
 import { lightExtract } from "../utils/light.extractor.js";
 import { analyzeBatch } from "./gemini.service.js";
 import { jobStore } from "./jobStore.js";
+import fs from "node:fs";
 
 puppeteer.use(StealthPlugin());
 
@@ -116,23 +117,16 @@ export async function runScraperJob(query, jobId) {
       return;
     }
 
-    let execPath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    try {
-      if (!execPath && typeof puppeteer.executablePath === "function") {
-        execPath = puppeteer.executablePath();
-      }
-    } catch (e) {
-      console.log("executablePath error:", e.message);
-    }
-
-    console.log("Executable Path:", execPath);
-    console.log("PUPPETEER_EXECUTABLE_PATH:", process.env.PUPPETEER_EXECUTABLE_PATH);
-    console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
-
     const isHeadless = process.env.PUPPETEER_HEADLESS === "false" ? false : true;
+    
+console.log("========== DEBUG ==========");
+console.log("Executable Path:", executablePath());
+console.log("Exists:", fs.existsSync(executablePath()));
+console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
+console.log("===========================");
     browser = await puppeteer.launch({
       headless: isHeadless,
-      executablePath: execPath || undefined,
+      executablePath: executablePath(), 
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
