@@ -7,21 +7,20 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon node index.js",
-    "start": "node index.js"
+    "dev": "nodemon index.js",
+    "start": "node index.js",
+    "render-postbuild": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
     "bcrypt": "^6.0.0",
-    "bullmq": "^5.70.4",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "he": "^1.2.0",
-    "ioredis": "^5.10.0",
     "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.3",
     "libphonenumber-js": "^1.12.41",

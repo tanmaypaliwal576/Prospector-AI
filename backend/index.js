@@ -16,14 +16,27 @@ const app = express();
    MIDDLEWARES
 ========================= */
 app.use(express.json());
-app.use(cors());
+
+const allowedOrigins = process.env.CLIENT_URL 
+  ? process.env.CLIENT_URL.split(',').map(url => url.trim())
+  : "*";
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 
 /* =========================
    ROUTES
 ========================= */
 app.use("/api/leads", leadsRoutes);
-app.use("/api/analytics", analyticsRoutes); // ✅ NEW
+app.use("/api/analytics", analyticsRoutes);
 app.use("/api/user", userRoutes);
+
+// Direct alias routes (handles calls made without /api prefix)
+app.use("/leads", leadsRoutes);
+app.use("/analytics", analyticsRoutes);
+app.use("/user", userRoutes);
 
 /* =========================
    HEALTH CHECK
