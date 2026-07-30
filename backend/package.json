@@ -6,12 +6,18 @@
   "author": "",
   "type": "module",
   "main": "index.js",
+
+  "engines": {
+    "node": "22.x"
+  },
+
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
     "postinstall": "npx puppeteer browsers install chrome",
     "render-postbuild": "npx puppeteer browsers install chrome"
   },
+
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
