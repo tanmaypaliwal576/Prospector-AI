@@ -19,6 +19,17 @@ export default function Dashboard() {
 
   const [selectedLead, setSelectedLead] = useState(null);
 
+  /* ================= HELPER ================= */
+
+  const safeJson = async (res) => {
+    if (!res || !res.ok) return null;
+    const contentType = res.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      return await res.json().catch(() => null);
+    }
+    return null;
+  };
+
   /* ================= LOAD ================= */
 
   useEffect(() => {
@@ -33,16 +44,16 @@ export default function Dashboard() {
         fetch(`${API_BASE_URL}/user/credits`)
       ]);
 
-      const leadsData = await leadsRes.json();
-      const statsData = await statsRes.json();
-      const creditsData = await creditsRes.json();
+      const leadsData = await safeJson(leadsRes);
+      const statsData = await safeJson(statsRes);
+      const creditsData = await safeJson(creditsRes);
 
-      if (leadsData.success) {
+      if (leadsData?.success) {
         setLeads(leadsData.leads);
         setTotalPages(leadsData.pagination.pages);
       }
-      if (statsData.success) setStats(statsData.stats);
-      if (creditsData.success) setCredits(creditsData.credits);
+      if (statsData?.success) setStats(statsData.stats);
+      if (creditsData?.success) setCredits(creditsData.credits);
     } catch (e) {
       console.error("Load all error: ", e);
     }
@@ -54,8 +65,8 @@ export default function Dashboard() {
     const interval = setInterval(async () => {
       try {
         const creditsRes = await fetch(`${API_BASE_URL}/user/credits`);
-        const creditsData = await creditsRes.json();
-        if (creditsData.success) setCredits(creditsData.credits);
+        const creditsData = await safeJson(creditsRes);
+        if (creditsData?.success) setCredits(creditsData.credits);
       } catch (e) { /* silent */ }
     }, 4000);
     return () => clearInterval(interval);
@@ -67,18 +78,22 @@ export default function Dashboard() {
     if (!query) return;
     setLoading(true);
     setProgress({ done: 0, total: 0 });
-    const res = await fetch(`${API_BASE_URL}/leads/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query })
-    });
+    try {
+      const res = await fetch(`${API_BASE_URL}/leads/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query })
+      });
 
-    const data = await res.json();
-    setLoading(false);
-    if (data.success) {
-      setJobId(data.jobId);
-    } else {
-      alert(data.message);
+      const data = await safeJson(res);
+      setLoading(false);
+      if (data?.success) {
+        setJobId(data.jobId);
+      } else if (data?.message) {
+        alert(data.message);
+      }
+    } catch (e) {
+      setLoading(false);
     }
   };
 
@@ -95,8 +110,8 @@ export default function Dashboard() {
   const handleRecharge = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/user/recharge`, { method: "POST" });
-      const data = await res.json();
-      if (data.success) setCredits(data.credits);
+      const data = await safeJson(res);
+      if (data?.success) setCredits(data.credits);
     } catch (e) {
       console.error("Recharge error:", e);
     }
@@ -108,19 +123,21 @@ export default function Dashboard() {
     if (!jobId) return;
 
     const interval = setInterval(async () => {
-      const res = await fetch(`${API_BASE_URL}/leads/progress/${jobId}`);
-      const data = await res.json();
+      try {
+        const res = await fetch(`${API_BASE_URL}/leads/progress/${jobId}`);
+        const data = await safeJson(res);
 
-      if (data.success) {
-        setProgress(data);
+        if (data?.success) {
+          setProgress(data);
 
-        // Completion logic
-        if (data.phase === "completed") {
-          clearInterval(interval);
-          setJobId(null);
-          loadAll(); // Refresh table when done
+          // Completion logic
+          if (data.phase === "completed") {
+            clearInterval(interval);
+            setJobId(null);
+            loadAll(); // Refresh table when done
+          }
         }
-      }
+      } catch (e) { /* silent */ }
     }, 500);
 
     return () => clearInterval(interval);
