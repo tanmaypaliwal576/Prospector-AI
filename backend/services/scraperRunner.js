@@ -8,6 +8,7 @@ import { extractWebsiteText } from "../utils/website.extractor.js";
 import { lightExtract } from "../utils/light.extractor.js";
 import { analyzeBatch } from "./gemini.service.js";
 import { jobStore } from "./jobStore.js";
+import fs from "node:fs";
 
 puppeteer.use(StealthPlugin());
 
@@ -117,9 +118,15 @@ export async function runScraperJob(query, jobId) {
     }
 
     const isHeadless = process.env.PUPPETEER_HEADLESS === "false" ? false : true;
+    
+console.log("========== DEBUG ==========");
+console.log("Executable Path:", executablePath());
+console.log("Exists:", fs.existsSync(executablePath()));
+console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
+console.log("===========================");
     browser = await puppeteer.launch({
       headless: isHeadless,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: executablePath(), 
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
