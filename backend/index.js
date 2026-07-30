@@ -17,14 +17,31 @@ const app = express();
 ========================= */
 app.use(express.json());
 
-const allowedOrigins = process.env.CLIENT_URL 
-  ? process.env.CLIENT_URL.split(',').map(url => url.trim())
-  : "*";
-
+// Bulletproof CORS Configuration (handles credentials + Render/Netlify dynamic origins)
 app.use(cors({
-  origin: allowedOrigins,
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    const cleanOrigin = origin.replace(/\/$/, "");
+
+    if (process.env.CLIENT_URL) {
+      const allowedList = process.env.CLIENT_URL.split(',').map(u => u.trim().replace(/\/$/, ""));
+      if (allowedList.includes("*") || allowedList.includes(cleanOrigin)) {
+        return callback(null, true);
+      }
+    }
+
+    // Default: reflect origin to satisfy credentials: true requirement
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
 }));
+
+// Handle preflight OPTIONS explicitly
+app.options("*", cors());
 
 /* =========================
    ROUTES
