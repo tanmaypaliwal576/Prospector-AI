@@ -24,4 +24,28 @@ router.get("/credits", async (req, res) => {
   }
 });
 
+// Recharge credits endpoint
+router.post("/recharge", async (req, res) => {
+  try {
+    let user = await User.findOne({ username: "admin" });
+    if (!user) {
+      user = await User.create({ username: "admin", credits: 100 });
+    } else {
+      user.credits += 100;
+      await user.save();
+    }
+    res.json({
+      success: true,
+      credits: user.credits,
+      message: "100 Credits added successfully!"
+    });
+  } catch (error) {
+    console.error("Recharge credits error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 export default router;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Download, Zap, AlertCircle, RefreshCw } from "lucide-react";
+import { API_BASE_URL } from "../api/apiConfig.js";
 
 export default function Dashboard() {
   const [leads, setLeads] = useState([]);
@@ -27,9 +28,9 @@ export default function Dashboard() {
   const loadAll = async () => {
     try {
       const [leadsRes, statsRes, creditsRes] = await Promise.all([
-        fetch(`/api/leads?page=${page}&limit=10${qualityFilter ? `&quality=${qualityFilter}` : ''}`),
-        fetch("/api/leads/stats"),
-        fetch("/api/user/credits")
+        fetch(`${API_BASE_URL}/leads?page=${page}&limit=10${qualityFilter ? `&quality=${qualityFilter}` : ''}`),
+        fetch(`${API_BASE_URL}/leads/stats`),
+        fetch(`${API_BASE_URL}/user/credits`)
       ]);
 
       const leadsData = await leadsRes.json();
@@ -52,7 +53,7 @@ export default function Dashboard() {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const creditsRes = await fetch("/api/user/credits");
+        const creditsRes = await fetch(`${API_BASE_URL}/user/credits`);
         const creditsData = await creditsRes.json();
         if (creditsData.success) setCredits(creditsData.credits);
       } catch (e) { /* silent */ }
@@ -66,7 +67,7 @@ export default function Dashboard() {
     if (!query) return;
     setLoading(true);
     setProgress({ done: 0, total: 0 });
-    const res = await fetch("/api/leads/search", {
+    const res = await fetch(`${API_BASE_URL}/leads/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query })
@@ -81,14 +82,24 @@ export default function Dashboard() {
     }
   };
 
-  /* ================= EXPORT ================= */
+  /* ================= EXPORT & RECHARGE ================= */
 
   const handleExportCSV = async () => {
-    window.location.href = "/api/leads/export/csv";
+    window.open(`${API_BASE_URL}/leads/export/csv`, "_blank");
   };
 
   const handleExportExcel = async () => {
-    window.location.href = "/api/leads/export/excel";
+    window.open(`${API_BASE_URL}/leads/export/excel`, "_blank");
+  };
+
+  const handleRecharge = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/user/recharge`, { method: "POST" });
+      const data = await res.json();
+      if (data.success) setCredits(data.credits);
+    } catch (e) {
+      console.error("Recharge error:", e);
+    }
   };
 
   /* ================= PROGRESS ================= */
@@ -97,7 +108,7 @@ export default function Dashboard() {
     if (!jobId) return;
 
     const interval = setInterval(async () => {
-      const res = await fetch(`/api/leads/progress/${jobId}`);
+      const res = await fetch(`${API_BASE_URL}/leads/progress/${jobId}`);
       const data = await res.json();
 
       if (data.success) {
@@ -137,19 +148,27 @@ export default function Dashboard() {
 
         {/* HEADER */}
         <motion.div initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="flex justify-between items-center mb-10 pb-6 border-b border-white/10">
-        <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-gray-300 to-gray-100">
-  ProspectMiner AI
-</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-gray-300 to-gray-100">
+            ProspectMiner AI
+          </h1>
 
-         <div className={`flex items-center gap-2 font-bold ${
-  credits === null
-    ? 'text-gray-400'
-    : credits > 0
-    ? 'text-emerald-400'
-    : 'text-red-400 animate-pulse'
-}`}>
-   🪙 {credits === null ? "--" : credits}
-</div>
+          <div className="flex items-center gap-4">
+            <div className={`flex items-center gap-2 font-bold ${
+              credits === null
+                ? 'text-gray-400'
+                : credits > 0
+                ? 'text-emerald-400'
+                : 'text-red-400 animate-pulse'
+            }`}>
+              🪙 {credits === null ? "--" : credits} Credits
+            </div>
+            <button
+              onClick={handleRecharge}
+              className="glass px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-white/10 border border-emerald-500/30 text-emerald-300 transition-colors"
+            >
+              + Recharge (+100)
+            </button>
+          </div>
         </motion.div>
 
         <motion.div variants={containerVars} initial="hidden" animate="show">
@@ -163,12 +182,20 @@ export default function Dashboard() {
                 exit={{ opacity: 0, height: 0 }}
                 className="mb-8"
               >
-                <div className="glass !bg-red-500/10 !border-red-500/30 p-6 rounded-2xl flex items-start gap-4 shadow-[0_0_30px_rgba(239,68,68,0.15)]">
-                  <AlertCircle className="text-red-400 w-8 h-8 shrink-0" />
-                  <div>
-                    <h3 className="text-red-400 font-bold text-lg">Credits Depleted</h3>
-                    <p className="text-red-200/70 text-sm mt-1">You have exhausted your credits. The scraper will no longer extract leads. Please recharge your balance to continue.</p>
+                <div className="glass !bg-red-500/10 !border-red-500/30 p-6 rounded-2xl flex items-center justify-between gap-4 shadow-[0_0_30px_rgba(239,68,68,0.15)]">
+                  <div className="flex items-start gap-4">
+                    <AlertCircle className="text-red-400 w-8 h-8 shrink-0" />
+                    <div>
+                      <h3 className="text-red-400 font-bold text-lg">Credits Depleted</h3>
+                      <p className="text-red-200/70 text-sm mt-1">You have exhausted your credits. Click recharge below to add 100 free credits instantly.</p>
+                    </div>
                   </div>
+                  <button
+                    onClick={handleRecharge}
+                    className="btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold whitespace-nowrap shrink-0"
+                  >
+                    + Add 100 Credits
+                  </button>
                 </div>
               </motion.div>
             )}

@@ -39,14 +39,13 @@ export const exportLeadsToCSV = async (res) => {
     ].join(",");
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", "attachment; filename=leads.csv");
-    res.write("\uFEFF");
-    res.write(headers + "\n");
+    res.setHeader("Content-Disposition", 'attachment; filename="leads.csv"');
+    
+    let csvData = "\uFEFF" + headers + "\n";
 
-    const cursor = Lead.find({}).lean().cursor();
-    let count = 0;
+    const leads = await Lead.find({}).lean();
 
-    for await (const lead of cursor) {
+    for (const lead of leads) {
       const row = [
         safeCSV(lead.name),
         safeCSV(lead.website),
@@ -60,16 +59,14 @@ export const exportLeadsToCSV = async (res) => {
         safeCSV(lead.leadQuality),
       ].join(",");
 
-      res.write(row + "\n");
-      count++;
+      csvData += row + "\n";
     }
 
-    res.end();
-    console.log(`📤 CSV Exported: ${count} leads`);
+    res.send(csvData);
+    console.log(`📤 CSV Exported: ${leads.length} leads`);
   } catch (err) {
     console.error("❌ CSV Export Error:", err);
     if (!res.headersSent) res.status(500).json({ error: "CSV export failed" });
-    else res.end();
   }
 };
 
@@ -108,34 +105,31 @@ export const exportLeadsToExcel = async (res) => {
       };
     });
 
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=leads.xlsx');
+    const leads = await Lead.find({}).lean();
 
-    const cursor = Lead.find({}).lean().cursor();
-    let count = 0;
-
-    for await (const lead of cursor) {
+    for (const lead of leads) {
       worksheet.addRow({
-        name: lead.name || "null",
-        website: lead.website || "null",
-        phone: lead.phone || "null",
-        address: lead.address || "null",
-        services: (lead.services || []).join(" | ") || "null",
-        businessType: lead.businessType || "null",
-        description: lead.description || "null",
-        ownerName: lead.ownerName || "null",
-        email: lead.emailGuess || "null",
-        leadQuality: lead.leadQuality || "null",
+        name: lead.name || "",
+        website: lead.website || "",
+        phone: lead.phone || "",
+        address: lead.address || "",
+        services: (lead.services || []).join(" | "),
+        businessType: lead.businessType || "",
+        description: lead.description || "",
+        ownerName: lead.ownerName || "",
+        email: lead.emailGuess || "",
+        leadQuality: lead.leadQuality || "",
       });
-      count++;
     }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="leads.xlsx"');
 
     await workbook.xlsx.write(res);
     res.end();
-    console.log(`📤 Excel Exported: ${count} leads`);
+    console.log(`📤 Excel Exported: ${leads.length} leads`);
   } catch (err) {
     console.error("❌ Excel Export Error:", err);
     if (!res.headersSent) res.status(500).json({ error: "Excel export failed" });
-    else res.end();
   }
 };

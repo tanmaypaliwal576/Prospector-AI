@@ -1,8 +1,8 @@
 import express from "express";
-import { scraperQueue } from "../queues/scraper.queue.js";
-import { redisConnection } from "../redis/redis.connection.js";
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
+import { jobStore } from "../services/jobStore.js";
+import { runScraperJob } from "../services/scraperRunner.js";
 
 import { exportLeadsToCSV, exportLeadsToExcel } from "../utils/exporter.js";
 
@@ -36,11 +36,18 @@ router.post("/search", async (req, res) => {
       });
     }
 
-    const job = await scraperQueue.add("scrape", { query });
+    const jobId = jobStore.createJob();
+
+    // Trigger background scraper task (non-blocking)
+    setImmediate(() => {
+      runScraperJob(query, jobId).catch(err => {
+        console.error("Background scrape job failed:", err);
+      });
+    });
 
     res.json({
       success: true,
-      jobId: job.id,
+      jobId,
       message: "Scraping started"
     });
 
@@ -190,63 +197,8 @@ router.get("/stats", async (req, res) => {
 router.get("/progress/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
-
-    // ✅ SCRAPING PROGRESS
-    const scrapeTotal = Number(await redisConnection.get(`scrape:${jobId}:total`)) || 0;
-    const scrapeDone = Number(await redisConnection.get(`scrape:${jobId}:done`)) || 0;
-
-    // ✅ ENRICHMENT PROGRESS
-    const enrichTotal = Number(await redisConnection.get(`enrichment:${jobId}:total`)) || 0;
-    const enrichDone = Number(await redisConnection.get(`enrichment:${jobId}:done`)) || 0;
-
-    // 🔥 PHASE 1: SCRAPING
-    if (scrapeTotal > 0 && scrapeDone < scrapeTotal) {
-      return res.json({
-        success: true,
-        phase: "scraping",
-        total: scrapeTotal,
-        done: scrapeDone
-      });
-    }
-
-    // 🔥 PHASE 2: ENRICHING
-    if (enrichTotal > 0 && enrichDone < enrichTotal) {
-      return res.json({
-        success: true,
-        phase: "enriching",
-        total: enrichTotal,
-        done: enrichDone
-      });
-    }
-
-    // 🔥 PHASE 3: COMPLETED
-    if (scrapeTotal > 0 && scrapeDone >= scrapeTotal && enrichTotal > 0 && enrichDone >= enrichTotal) {
-      return res.json({
-        success: true,
-        phase: "completed",
-        total: enrichTotal,
-        done: enrichDone
-      });
-    }
-
-    // If scraping finished but no valid leads to enrich
-    if (scrapeTotal > 0 && scrapeDone >= scrapeTotal && enrichTotal === 0) {
-      return res.json({
-         success: true,
-         phase: "completed",
-         total: scrapeTotal,
-         done: scrapeDone
-      });
-    }
-
-    // 🔥 FALLBACK (initial state)
-    return res.json({
-      success: true,
-      phase: "starting",
-      total: 0,
-      done: 0
-    });
-
+    const progressData = jobStore.getProgress(jobId);
+    return res.json(progressData);
   } catch (error) {
     console.error("Progress error:", error);
     res.status(500).json({
