@@ -1,44 +1,44 @@
-{
-  "name": "backend",
-  "version": "1.0.0",
-  "description": "",
-  "license": "ISC",
-  "author": "",
-  "type": "module",
-  "main": "index.js",
+  {
+    "name": "backend",
+    "version": "1.0.0",
+    "description": "",
+    "license": "ISC",
+    "author": "",
+    "type": "module",
+    "main": "index.js",
 
-  "engines": {
-    "node": "22.x"
-  },
+    "engines": {
+      "node": "22.x"
+    },
 
-  "scripts": {
-    "dev": "nodemon index.js",
-    "start": "node index.js",
-    "postinstall": "npx puppeteer browsers install chrome",
-    "render-postbuild": "npx puppeteer browsers install chrome"
-  },
+    "scripts": {
+      "dev": "nodemon index.js",
+      "start": "node index.js",
+      "postinstall": "npx puppeteer browsers install chrome",
+      "render-postbuild": "npx puppeteer browsers install chrome"
+    },
 
-  "dependencies": {
-    "@google/generative-ai": "^0.24.1",
-    "axios": "^1.13.6",
-    "bcrypt": "^6.0.0",
-    "cheerio": "^1.2.0",
-    "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
-    "exceljs": "^4.4.0",
-    "express": "^5.2.1",
-    "he": "^1.2.0",
-    "json2csv": "^6.0.0-alpha.2",
-    "jsonwebtoken": "^9.0.3",
-    "libphonenumber-js": "^1.12.41",
-    "mongoose": "^9.2.4",
-    "multer": "^2.1.1",
-    "node-fetch": "^3.3.2",
-    "nodemon": "^3.1.14",
-    "puppeteer": "^24.38.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "random-useragent": "^0.5.0",
-    "validator": "^13.15.26"
+    "dependencies": {
+      "@google/generative-ai": "^0.24.1",
+      "axios": "^1.13.6",
+      "bcrypt": "^6.0.0",
+      "cheerio": "^1.2.0",
+      "cors": "^2.8.6",
+      "dotenv": "^17.3.1",
+      "exceljs": "^4.4.0",
+      "express": "^5.2.1",
+      "he": "^1.2.0",
+      "json2csv": "^6.0.0-alpha.2",
+      "jsonwebtoken": "^9.0.3",
+      "libphonenumber-js": "^1.12.41",
+      "mongoose": "^9.2.4",
+      "multer": "^2.1.1",
+      "node-fetch": "^3.3.2",
+      "nodemon": "^3.1.14",
+      "puppeteer": "^24.38.0",
+      "puppeteer-extra": "^3.3.6",
+      "puppeteer-extra-plugin-stealth": "^2.11.2",
+      "random-useragent": "^0.5.0",
+      "validator": "^13.15.26"
+    }
   }
-}

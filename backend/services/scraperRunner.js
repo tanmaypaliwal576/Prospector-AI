@@ -124,19 +124,16 @@ console.log("Executable Path:", executablePath());
 console.log("Exists:", fs.existsSync(executablePath()));
 console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
 console.log("===========================");
-    browser = await puppeteer.launch({
-      headless: isHeadless,
-      executablePath: executablePath(), 
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--disable-gpu",
-        "--disable-blink-features=AutomationControlled",
-        "--lang=en-US,en"
-      ]
-    });
+    
+browser = await puppeteer.launch({
+  headless: isHeadless,
+  executablePath: executablePath(),
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+  ],
+});
 
     console.log(`🚀 [SCRAPER] Launching job for query: "${query}" (Job ID: ${jobId})`);
 
