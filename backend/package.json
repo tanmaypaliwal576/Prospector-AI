@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
+    "postinstall": "npx puppeteer browsers install chrome",
     "render-postbuild": "npx puppeteer browsers install chrome"
   },
   "dependencies": {

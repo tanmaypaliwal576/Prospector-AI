@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: prospecter-backend
+    env: node
+    rootDir: backend
+    buildCommand: ./render-build.sh
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/.cache/puppeteer
