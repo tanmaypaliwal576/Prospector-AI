@@ -116,10 +116,23 @@ export async function runScraperJob(query, jobId) {
       return;
     }
 
+    let execPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    try {
+      if (!execPath && typeof puppeteer.executablePath === "function") {
+        execPath = puppeteer.executablePath();
+      }
+    } catch (e) {
+      console.log("executablePath error:", e.message);
+    }
+
+    console.log("Executable Path:", execPath);
+    console.log("PUPPETEER_EXECUTABLE_PATH:", process.env.PUPPETEER_EXECUTABLE_PATH);
+    console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
+
     const isHeadless = process.env.PUPPETEER_HEADLESS === "false" ? false : true;
     browser = await puppeteer.launch({
       headless: isHeadless,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: execPath || undefined,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
