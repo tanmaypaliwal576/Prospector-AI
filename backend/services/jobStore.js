@@ -52,13 +52,34 @@ class JobStore {
     job.phase = phase;
   }
 
+  setError(jobId, message) {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    job.phase = "failed";
+    job.error = message;
+  }
+
   getProgress(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) {
-      return { success: true, phase: "starting", total: 0, done: 0 };
+      // jobId not found: either it never existed, or the server process
+      // restarted (e.g. Render ran out of memory) and lost in-memory state.
+      // Report this explicitly instead of pretending the job is "starting"
+      // forever, so the frontend can stop polling and tell the user.
+      return { success: true, phase: "unknown", total: 0, done: 0 };
     }
 
-    const { scrapeTotal, scrapeDone, enrichTotal, enrichDone, phase } = job;
+    const { scrapeTotal, scrapeDone, enrichTotal, enrichDone, phase, error } = job;
+
+    if (phase === "failed") {
+      return {
+        success: true,
+        phase: "failed",
+        total: enrichTotal || scrapeTotal,
+        done: enrichDone || scrapeDone,
+        error: error || "Job failed"
+      };
+    }
 
     if (phase === "completed") {
       return {

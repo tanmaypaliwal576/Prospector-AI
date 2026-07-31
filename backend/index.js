@@ -10,6 +10,16 @@ import userRoutes from "./routes/user.js";
 
 dotenv.config();
 
+// Without these, an unexpected error anywhere (e.g. inside Puppeteer)
+// can crash the whole process with no log line explaining why — which
+// then looks like Render "silently" restarting the server.
+process.on("unhandledRejection", (reason) => {
+  console.error("🔥 UNHANDLED REJECTION:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("🔥 UNCAUGHT EXCEPTION:", err);
+});
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 

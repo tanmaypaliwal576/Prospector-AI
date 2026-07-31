@@ -14,6 +14,16 @@ import { jobStore } from "./jobStore.js";
 const puppeteer = addExtra(puppeteerCore);
 puppeteer.use(StealthPlugin());
 
+// Guarantees a promise settles within `ms`, so a single stuck step
+// (e.g. Chromium failing to spawn) can never hang the whole job forever.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 const badDomains = [
   "booking.com",
   "facebook.com",
@@ -136,6 +146,19 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
    RUN FULL SCRAPER & ENRICHMENT PIPELINE
 ============================================================ */
 export async function runScraperJob(query, jobId) {
+  // Master safety net: no matter what happens inside (Chromium hanging,
+  // Google blocking us, a stuck network call), this job WILL finish and
+  // update jobStore within this window, so the frontend never spins forever.
+  const MASTER_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+  try {
+    await withTimeout(runScraperJobInner(query, jobId), MASTER_TIMEOUT_MS, "Scraper job");
+  } catch (err) {
+    console.error("❌ [SCRAPER JOB FAILED/TIMED OUT]:", err.message);
+    jobStore.setError(jobId, err.message);
+  }
+}
+
+async function runScraperJobInner(query, jobId) {
   let browser;
   try {
     console.log(`\n========================================`);
@@ -156,7 +179,7 @@ export async function runScraperJob(query, jobId) {
 
     console.log("[STEP 2] Launching Chromium browser instance...");
     const launchOpts = await getBrowserLaunchOptions();
-    browser = await puppeteer.launch(launchOpts);
+    browser = await withTimeout(puppeteer.launch(launchOpts), 30000, "Browser launch");
     console.log("[STEP 2.1] Chromium browser launched successfully.");
 
     console.log("[STEP 3] Opening main browser tab...");
@@ -242,7 +265,11 @@ export async function runScraperJob(query, jobId) {
     }
 
     console.log("[STEP 8] Extracting place details from collected links in chunks...");
-    const CHUNK_SIZE = 5;
+    // Kept low on purpose: each concurrent tab is a full Chrome renderer
+    // process. On a 512MB Render instance, 5 concurrent tabs + the main
+    // scrolling tab was enough to run the whole container out of memory,
+    // causing a silent restart (and a permanently "stuck" job on the frontend).
+    const CHUNK_SIZE = 2;
     const leadsToEnrich = [];
 
     for (let i = 0; i < links.length; i += CHUNK_SIZE) {
@@ -363,7 +390,8 @@ export async function runScraperJob(query, jobId) {
 
   } catch (err) {
     console.error("❌ [SCRAPER FATAL ERROR]:", err);
-    jobStore.setPhase(jobId, "completed");
+    jobStore.setError(jobId, err.message || "Scraper failed");
+    throw err; // let the master timeout wrapper log/record this too
   } finally {
     if (browser) {
       await browser.close().catch(() => {});
