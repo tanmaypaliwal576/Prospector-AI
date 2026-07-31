@@ -1,3 +1,4 @@
+import fs from "fs";
 import { addExtra } from "puppeteer-extra";
 import puppeteerCore from "puppeteer-core";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -22,48 +23,75 @@ const badDomains = [
   "justdial.com"
 ];
 
+async function getBrowserLaunchOptions() {
+  if (process.platform === "win32") {
+    const winPaths = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+    ];
+    const foundPath = winPaths.find(p => fs.existsSync(p));
+    return {
+      headless: true,
+      executablePath: foundPath || undefined,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+    };
+  }
+
+  return {
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless
+  };
+}
+
 /* ============================================================
    ENRICH SINGLE LEAD
 ============================================================ */
-async function enrichSingleLead(lead, jobId) {
+async function enrichSingleLead(lead, jobId, index, totalCount) {
+  console.log(`[ENRICH STEP 1] Starting lead ${index + 1}/${totalCount}: ${lead.website}`);
   try {
     if (!lead || !lead.website || lead.status === "enriched") {
-      jobStore.incEnrichDone(jobId);
+      console.log(`[ENRICH STEP 2] Lead ${index + 1} already enriched or invalid. Skipping.`);
       return;
     }
 
     if (badDomains.some(d => lead.website.includes(d))) {
+      console.log(`[ENRICH STEP 3] Lead ${index + 1} is aggregator domain. Scoring directly.`);
       const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, 0);
       await Lead.updateOne(
         { _id: lead._id },
         { $set: { leadQuality: score, enriched: true, enrichmentStatus: "done", status: "enriched" } }
       );
-      jobStore.incEnrichDone(jobId);
       return;
     }
 
+    console.log(`[ENRICH STEP 4] Extracting text for lead ${index + 1}: ${lead.website}`);
     let text;
     try {
       text = await lightExtract(lead.website);
       if (!text || text.length < 1500) {
         text = await extractWebsiteText(lead.website);
       }
-    } catch {
-      jobStore.incEnrichDone(jobId);
+    } catch (extractErr) {
+      console.log(`[ENRICH STEP 5] Extraction failed for lead ${index + 1}: ${extractErr.message}`);
       return;
     }
 
     if (!text || text.length < 1500) {
+      console.log(`[ENRICH STEP 6] Low text content (${text?.length || 0} chars) for lead ${index + 1}. Scoring manually.`);
       const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, text?.length || 0);
       await Lead.updateOne(
         { _id: lead._id },
         { $set: { leadQuality: score, enriched: true, enrichmentStatus: "done", status: "enriched" } }
       );
-      jobStore.incEnrichDone(jobId);
       return;
     }
 
     text = text.slice(0, 3000);
+    console.log(`[ENRICH STEP 7] Sending ${text.length} chars to Gemini AI for lead ${index + 1}...`);
     const aiResults = await analyzeBatch([text]);
     const aiData = aiResults?.[0];
 
@@ -78,6 +106,7 @@ async function enrichSingleLead(lead, jobId) {
       text.length
     );
 
+    console.log(`[ENRICH STEP 8] Gemini response received. Updating DB for lead ${index + 1} (Score: ${score})...`);
     await Lead.updateOne(
       { _id: lead._id },
       {
@@ -94,8 +123,10 @@ async function enrichSingleLead(lead, jobId) {
         }
       }
     );
+    console.log(`[ENRICH STEP 9] Lead ${index + 1}/${totalCount} successfully enriched.`);
+
   } catch (err) {
-    console.error("Enrichment error:", err.message);
+    console.error(`[ENRICH ERROR] Failed lead ${index + 1}:`, err.message);
   } finally {
     jobStore.incEnrichDone(jobId);
   }
@@ -107,39 +138,39 @@ async function enrichSingleLead(lead, jobId) {
 export async function runScraperJob(query, jobId) {
   let browser;
   try {
+    console.log(`\n========================================`);
+    console.log(`[STEP 1] Starting Scraper Job for query: "${query}" (ID: ${jobId})`);
+    console.log(`========================================`);
+
     let user = await User.findOne({ username: "admin" });
     if (!user) {
+      console.log("[STEP 1.1] Admin user not found. Creating default admin user.");
       user = await User.create({ username: "admin", credits: 100 });
     }
 
     if (user.credits <= 0) {
-      console.log("❌ [SCRAPER] No credits. Job stopped.");
+      console.log("❌ [STEP 1.2] Admin out of credits. Halting job.");
       jobStore.setPhase(jobId, "completed");
       return;
     }
 
-    browser = await puppeteer.launch({
-  executablePath: await chromium.executablePath(),
-  args: chromium.args,
-  defaultViewport: chromium.defaultViewport,
-  headless: "shell",
-  ignoreHTTPSErrors: true
-});
+    console.log("[STEP 2] Launching Chromium browser instance...");
+    const launchOpts = await getBrowserLaunchOptions();
+    browser = await puppeteer.launch(launchOpts);
+    console.log("[STEP 2.1] Chromium browser launched successfully.");
 
-    console.log(`🚀 [SCRAPER] Launching job for query: "${query}" (Job ID: ${jobId})`);
-
+    console.log("[STEP 3] Opening main browser tab...");
     const page = await browser.newPage();
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
 
-    await page.goto(
-      `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`,
-      { waitUntil: "domcontentloaded", timeout: 60000 }
-    );
+    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`;
+    console.log(`[STEP 4] Navigating to Google Maps search: ${searchUrl}`);
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    console.log("[STEP 4.1] Google Maps page loaded.");
 
-    // Auto-accept consent if redirected to consent page
     if (page.url().includes("consent.google.com")) {
-      console.log("⚠️ Google consent page detected, bypassing...");
+      console.log("[STEP 4.2] Bypassing Google Consent page...");
       await page.evaluate(() => {
         const btns = Array.from(document.querySelectorAll('button'));
         const acceptBtn = btns.find(b => b.textContent.includes('Accept all') || b.textContent.includes('I agree'));
@@ -148,9 +179,12 @@ export async function runScraperJob(query, jobId) {
       await new Promise(r => setTimeout(r, 2500));
     }
 
-    await page.waitForSelector("a[href*='/maps/place'], a.hfpxzc", { timeout: 15000 }).catch(() => {});
+    console.log("[STEP 5] Waiting for Google Maps place link selectors...");
+    await page.waitForSelector("a[href*='/maps/place'], a.hfpxzc", { timeout: 15000 }).catch(() => {
+      console.log("[STEP 5.1] Initial selector wait timed out, continuing scroll search...");
+    });
 
-    // Scroll and extract at least 35 place links (aiming for 30+ leads)
+    console.log("[STEP 6] Scrolling results feed to collect place links...");
     let links = [];
     let noNewLinksCount = 0;
     const TARGET_COUNT = 35;
@@ -182,32 +216,38 @@ export async function runScraperJob(query, jobId) {
       }).catch(() => []);
 
       if (links.length >= TARGET_COUNT) {
+        console.log(`[STEP 6.1] Target link count reached: ${links.length}`);
         break;
       }
 
       if (links.length === currentCount) {
         noNewLinksCount++;
-        if (noNewLinksCount > 5) break;
+        if (noNewLinksCount > 5) {
+          console.log(`[STEP 6.2] End of results feed reached at ${links.length} links.`);
+          break;
+        }
       } else {
         noNewLinksCount = 0;
       }
     }
 
     links = links.slice(0, 35);
-    console.log(`📊 [SCRAPER] Collected ${links.length} place links for "${query}"`);
+    console.log(`[STEP 7] Final place links collected: ${links.length}`);
     jobStore.setScrapeTotal(jobId, links.length);
 
     if (links.length === 0) {
-      console.log("⚠️ [SCRAPER] 0 links found. Job completed.");
+      console.log("[STEP 7.1] No place links extracted. Job complete.");
       jobStore.setPhase(jobId, "completed");
       return;
     }
 
+    console.log("[STEP 8] Extracting place details from collected links in chunks...");
     const CHUNK_SIZE = 5;
     const leadsToEnrich = [];
 
     for (let i = 0; i < links.length; i += CHUNK_SIZE) {
       const chunk = links.slice(i, i + CHUNK_SIZE);
+      console.log(`[STEP 8.1] Processing chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} items)...`);
       const batchData = [];
 
       await Promise.all(chunk.map(async (link) => {
@@ -259,6 +299,7 @@ export async function runScraperJob(query, jobId) {
       }));
 
       if (batchData.length > 0) {
+        console.log(`[STEP 8.2] Saving batch of ${batchData.length} leads to MongoDB...`);
         user = await User.findOne({ username: "admin" });
         if (user && user.credits <= 0) break;
 
@@ -299,23 +340,33 @@ export async function runScraperJob(query, jobId) {
       }
     }
 
+    console.log("[STEP 9] Closing Google Maps Puppeteer browser instance...");
+    await browser.close().catch(() => {});
+    browser = null;
+    console.log("[STEP 9.1] Google Maps browser closed cleanly.");
+
     // Process enrichment phase
     if (leadsToEnrich.length > 0) {
-      console.log(`✨ [SCRAPER] Enriching ${leadsToEnrich.length} valid leads...`);
+      console.log(`[STEP 10] Starting enrichment phase for ${leadsToEnrich.length} valid leads...`);
       jobStore.incEnrichTotal(jobId, leadsToEnrich.length);
       jobStore.setPhase(jobId, "enriching");
 
-      for (const lead of leadsToEnrich) {
-        await enrichSingleLead(lead, jobId);
+      for (let idx = 0; idx < leadsToEnrich.length; idx++) {
+        await enrichSingleLead(leadsToEnrich[idx], jobId, idx, leadsToEnrich.length);
       }
+    } else {
+      console.log("[STEP 10] No valid website leads to enrich.");
     }
 
+    console.log("[STEP 11] Job complete. Setting phase to completed.");
     jobStore.setPhase(jobId, "completed");
 
   } catch (err) {
-    console.error("Scraper job error:", err);
+    console.error("❌ [SCRAPER FATAL ERROR]:", err);
     jobStore.setPhase(jobId, "completed");
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
   }
 }
