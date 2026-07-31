@@ -1,7 +1,32 @@
+import fs from "fs";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import puppeteerCore from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
+
+async function getBrowserLaunchOptions() {
+  if (process.platform === "win32") {
+    const winPaths = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+    ];
+    const foundPath = winPaths.find(p => fs.existsSync(p));
+    return {
+      headless: true,
+      executablePath: foundPath || undefined,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+    };
+  }
+
+  return {
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless
+  };
+}
 
 const BLOCKED = [
   "instagram.com",
@@ -44,12 +69,8 @@ async function puppeteerExtract(url) {
   let browser;
 
   try {
-    browser = await puppeteerCore.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless
-    });
+    const launchOpts = await getBrowserLaunchOptions();
+    browser = await puppeteerCore.launch(launchOpts);
 
     const page = await browser.newPage();
 

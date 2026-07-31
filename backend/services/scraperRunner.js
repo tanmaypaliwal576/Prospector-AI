@@ -1,3 +1,4 @@
+import fs from "fs";
 import { addExtra } from "puppeteer-extra";
 import puppeteerCore from "puppeteer-core";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -101,6 +102,30 @@ async function enrichSingleLead(lead, jobId) {
   }
 }
 
+async function getBrowserLaunchOptions() {
+  if (process.platform === "win32") {
+    const winPaths = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+    ];
+    const foundPath = winPaths.find(p => fs.existsSync(p));
+    return {
+      headless: true,
+      executablePath: foundPath || undefined,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+    };
+  }
+
+  return {
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless
+  };
+}
+
 /* ============================================================
    RUN FULL SCRAPER & ENRICHMENT PIPELINE
 ============================================================ */
@@ -118,13 +143,8 @@ export async function runScraperJob(query, jobId) {
       return;
     }
 
-    browser = await puppeteer.launch({
-  executablePath: await chromium.executablePath(),
-  args: chromium.args,
-  defaultViewport: chromium.defaultViewport,
-  headless: "shell",
-  ignoreHTTPSErrors: true
-});
+    const launchOpts = await getBrowserLaunchOptions();
+    browser = await puppeteer.launch(launchOpts);
 
     console.log(`🚀 [SCRAPER] Launching job for query: "${query}" (Job ID: ${jobId})`);
 
