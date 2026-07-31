@@ -122,6 +122,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (!jobId) return;
 
+    const startedAt = Date.now();
+    // Safety net: if the backend never resolves the job within 5 minutes
+    // (e.g. it crashed/restarted and lost its state), stop polling and
+    // tell the user instead of spinning forever.
+    const MAX_WAIT_MS = 5 * 60 * 1000;
+
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/leads/progress/${jobId}`);
@@ -130,12 +136,32 @@ export default function Dashboard() {
         if (data?.success) {
           setProgress(data);
 
-          // Completion logic
           if (data.phase === "completed") {
             clearInterval(interval);
             setJobId(null);
             loadAll(); // Refresh table when done
+            return;
           }
+
+          if (data.phase === "failed") {
+            clearInterval(interval);
+            setJobId(null);
+            alert(`Scrape failed: ${data.error || "Unknown error"}`);
+            return;
+          }
+
+          if (data.phase === "unknown") {
+            clearInterval(interval);
+            setJobId(null);
+            alert("Lost track of this job (the server may have restarted). Please try again.");
+            return;
+          }
+        }
+
+        if (Date.now() - startedAt > MAX_WAIT_MS) {
+          clearInterval(interval);
+          setJobId(null);
+          alert("This is taking much longer than expected. Please try again.");
         }
       } catch (e) { /* silent */ }
     }, 500);
