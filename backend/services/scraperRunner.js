@@ -1,6 +1,7 @@
-import puppeteer from "puppeteer-extra";
-import { executablePath } from "puppeteer";
+import { addExtra } from "puppeteer-extra";
+import puppeteerCore from "puppeteer-core";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import chromium from "@sparticuz/chromium";
 import Lead from "../models/Lead.js";
 import User from "../models/User.js";
 import { calculateLeadScore } from "../utils/leadScoring.js";
@@ -8,8 +9,8 @@ import { extractWebsiteText } from "../utils/website.extractor.js";
 import { lightExtract } from "../utils/light.extractor.js";
 import { analyzeBatch } from "./gemini.service.js";
 import { jobStore } from "./jobStore.js";
-import fs from "node:fs";
 
+const puppeteer = addExtra(puppeteerCore);
 puppeteer.use(StealthPlugin());
 
 const badDomains = [
@@ -117,26 +118,13 @@ export async function runScraperJob(query, jobId) {
       return;
     }
 
-    const isHeadless = process.env.PUPPETEER_HEADLESS === "false" ? false : true;
-    
-console.log("========== DEBUG ==========");
-console.log("Executable Path:", executablePath());
-console.log("Exists:", fs.existsSync(executablePath()));
-console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
-console.log("===========================");
     browser = await puppeteer.launch({
-      headless: isHeadless,
-      executablePath: executablePath(), 
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--disable-gpu",
-        "--disable-blink-features=AutomationControlled",
-        "--lang=en-US,en"
-      ]
-    });
+  executablePath: await chromium.executablePath(),
+  args: chromium.args,
+  defaultViewport: chromium.defaultViewport,
+  headless: "shell",
+  ignoreHTTPSErrors: true
+});
 
     console.log(`🚀 [SCRAPER] Launching job for query: "${query}" (Job ID: ${jobId})`);
 
