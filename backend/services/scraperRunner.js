@@ -12,7 +12,28 @@ import { analyzeBatch } from "./gemini.service.js";
 import { jobStore } from "./jobStore.js";
 
 const puppeteer = addExtra(puppeteerCore);
-puppeteer.use(StealthPlugin());
+
+// Only enable the evasions that actually matter for Google Maps' bot checks.
+// The default StealthPlugin() config fires ~15 separate CDP calls per new
+// page (one per evasion module). On a resource-constrained instance,
+// CHUNK_SIZE concurrent tabs each doing 15 round-trips can overwhelm the
+// single CDP WebSocket and cause Puppeteer's internal `Audits.enable` call
+// to time out, which then cascades into the whole job hanging.
+const stealth = StealthPlugin();
+["chrome.app", "chrome.csi", "chrome.loadTimes", "chrome.runtime", "media.codecs",
+ "navigator.hardwareConcurrency", "navigator.languages", "navigator.permissions",
+ "navigator.plugins", "iframe.contentWindow", "sourceurl", "webgl.vendor",
+ "window.outerdimensions", "user-agent-override"
+].forEach(name => stealth.enabledEvasions.delete(name));
+puppeteer.use(stealth);
+
+// A stray unhandled rejection from a plugin lifecycle callback (outside our
+// awaited chain) can crash the whole Node process on modern Node versions.
+// That's almost certainly why jobs looked "stuck" instead of cleanly
+// erroring — the process itself was dying and restarting.
+process.on("unhandledRejection", (reason) => {
+  console.error("🔥 [scraperRunner] Unhandled rejection (contained):", reason?.message || reason);
+});
 
 // Guarantees a promise settles within `ms`, so a single stuck step
 // (e.g. Chromium failing to spawn) can never hang the whole job forever.
@@ -45,16 +66,47 @@ async function getBrowserLaunchOptions() {
     return {
       headless: true,
       executablePath: foundPath || undefined,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      protocolTimeout: 45000
     };
   }
 
   return {
-    args: chromium.args,
+    args: [
+      ...chromium.args,
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-translate",
+      "--metrics-recording-only",
+      "--mute-audio",
+      "--no-first-run"
+    ],
     defaultViewport: chromium.defaultViewport,
     executablePath: await chromium.executablePath(),
-    headless: chromium.headless
-  };
+    headless: chromium.headless,
+    // Fail fast instead of hanging ~3 minutes on a single stuck CDP call
+    // (e.g. Audits.enable) when Chromium is under memory/CPU pressure.
+    protocolTimeout: 45000
+}
+
+// Blocks images/fonts/media/stylesheets on a page. This is the single
+// biggest per-tab memory cost in headless Chrome, and none of it is needed
+// here since we only ever read innerText/hrefs. On a 512MB instance this
+// is the difference between "usually survives" and actually being safe —
+// nothing else in this file can prevent Render's OOM killer from SIGKILLing
+// the whole process, since that happens outside JS and can't be caught.
+async function blockHeavyResources(page) {
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    const type = req.resourceType();
+    if (["image", "media", "font", "stylesheet"].includes(type)) {
+      req.abort().catch(() => {});
+    } else {
+      req.continue().catch(() => {});
+    }
+  });
 }
 
 /* ============================================================
@@ -149,7 +201,11 @@ export async function runScraperJob(query, jobId) {
   // Master safety net: no matter what happens inside (Chromium hanging,
   // Google blocking us, a stuck network call), this job WILL finish and
   // update jobStore within this window, so the frontend never spins forever.
-  const MASTER_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+  // With TARGET_COUNT now capped at 10 leads and CHUNK_SIZE=1, a healthy
+  // job should finish in well under 2 minutes. Keeping the ceiling here
+  // means you find out fast if something's wrong, instead of waiting
+  // the full 4 minutes every time.
+  const MASTER_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
   try {
     await withTimeout(runScraperJobInner(query, jobId), MASTER_TIMEOUT_MS, "Scraper job");
   } catch (err) {
@@ -186,6 +242,7 @@ async function runScraperJobInner(query, jobId) {
     const page = await browser.newPage();
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+    await blockHeavyResources(page);
 
     const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`;
     console.log(`[STEP 4] Navigating to Google Maps search: ${searchUrl}`);
@@ -210,7 +267,11 @@ async function runScraperJobInner(query, jobId) {
     console.log("[STEP 6] Scrolling results feed to collect place links...");
     let links = [];
     let noNewLinksCount = 0;
-    const TARGET_COUNT = 35;
+    // Kept deliberately small: on a 512MB free-tier instance, reliably
+    // finishing a small batch beats attempting a big one and stalling or
+    // getting OOM-killed partway through. Raise this once you're off the
+    // free tier / have more headroom.
+    const TARGET_COUNT = 10;
 
     for (let i = 0; i < 50; i++) {
       const currentCount = links.length;
@@ -254,7 +315,7 @@ async function runScraperJobInner(query, jobId) {
       }
     }
 
-    links = links.slice(0, 35);
+    links = links.slice(0, 10);
     console.log(`[STEP 7] Final place links collected: ${links.length}`);
     jobStore.setScrapeTotal(jobId, links.length);
 
@@ -269,7 +330,14 @@ async function runScraperJobInner(query, jobId) {
     // process. On a 512MB Render instance, 5 concurrent tabs + the main
     // scrolling tab was enough to run the whole container out of memory,
     // causing a silent restart (and a permanently "stuck" job on the frontend).
-    const CHUNK_SIZE = 2;
+    // On Render's free tier (512MB RAM), even 2 concurrent tabs can push the
+    // container over the OOM limit — Render's OOM killer SIGKILLs the whole
+    // process with no error/log, which looks like a "silent shutdown". This
+    // is a hard external memory cap, not something a timeout or try/catch
+    // can defend against. Serial processing (1 tab at a time) plus blocking
+    // images/fonts/css (see blockHeavyResources) is the safest combination
+    // for this tier. Bump this back up only if/when you move off free tier.
+    const CHUNK_SIZE = 1;
     const leadsToEnrich = [];
 
     for (let i = 0; i < links.length; i += CHUNK_SIZE) {
@@ -278,10 +346,15 @@ async function runScraperJobInner(query, jobId) {
       const batchData = [];
 
       await Promise.all(chunk.map(async (link) => {
-        const p = await browser.newPage();
+        let p;
         try {
+          // newPage() itself is where Audits.enable can hang under memory
+          // pressure — give it its own short timeout so one bad tab can
+          // never stall the whole chunk (and eventually the whole job).
+          p = await withTimeout(browser.newPage(), 20000, `newPage(${link})`);
           await p.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
           await p.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+          await blockHeavyResources(p);
 
           const currentUser = await User.findOne({ username: "admin" });
           if (currentUser && currentUser.credits <= 0) return;
@@ -318,9 +391,9 @@ async function runScraperJobInner(query, jobId) {
           batchData.push({ name, address, phone, website, sourceQuery: query });
 
         } catch (err) {
-          // Ignore individual page errors
+          console.log(`[STEP 8.1.1] Skipping link (${err.message}): ${link}`);
         } finally {
-          await p.close().catch(() => {});
+          if (p) await p.close().catch(() => {});
           jobStore.incScrapeDone(jobId);
         }
       }));
@@ -397,4 +470,5 @@ async function runScraperJobInner(query, jobId) {
       await browser.close().catch(() => {});
     }
   }
+}
 }
