@@ -89,6 +89,7 @@ async function getBrowserLaunchOptions() {
     // Fail fast instead of hanging ~3 minutes on a single stuck CDP call
     // (e.g. Audits.enable) when Chromium is under memory/CPU pressure.
     protocolTimeout: 45000
+  };
 }
 
 // Blocks images/fonts/media/stylesheets on a page. This is the single
@@ -470,5 +471,4 @@ async function runScraperJobInner(query, jobId) {
       await browser.close().catch(() => {});
     }
   }
-}
 }
