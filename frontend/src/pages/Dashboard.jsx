@@ -117,18 +117,32 @@ export default function Dashboard() {
     }
   };
 
-  /* ================= PROGRESS ================= */
+  /* ================= PROGRESS & LIVE TIMER ================= */
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const formatTimer = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId) {
+      setElapsedSeconds(0);
+      return;
+    }
 
     const startedAt = Date.now();
-    // Safety net: if the backend never resolves the job within 5 minutes
-    // (e.g. it crashed/restarted and lost its state), stop polling and
-    // tell the user instead of spinning forever.
     const MAX_WAIT_MS = 5 * 60 * 1000;
 
-    const interval = setInterval(async () => {
+    const timerInterval = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+
+    let hasLoadedInitialLeads = false;
+
+    const pollInterval = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/leads/progress/${jobId}`);
         const data = await safeJson(res);
@@ -136,22 +150,35 @@ export default function Dashboard() {
         if (data?.success) {
           setProgress(data);
 
+          // As soon as scraping finishes and enrichment starts, reload leads to show in DB table
+          if (data.phase === "enriching") {
+            if (!hasLoadedInitialLeads) {
+              hasLoadedInitialLeads = true;
+              loadAll();
+            } else if (elapsedSeconds % 3 === 0) {
+              loadAll(); // Periodically update enriched lead data in table
+            }
+          }
+
           if (data.phase === "completed") {
-            clearInterval(interval);
+            clearInterval(pollInterval);
+            clearInterval(timerInterval);
             setJobId(null);
-            loadAll(); // Refresh table when done
+            loadAll(); // Final refresh when job completes
             return;
           }
 
           if (data.phase === "failed") {
-            clearInterval(interval);
+            clearInterval(pollInterval);
+            clearInterval(timerInterval);
             setJobId(null);
             alert(`Scrape failed: ${data.error || "Unknown error"}`);
             return;
           }
 
           if (data.phase === "unknown") {
-            clearInterval(interval);
+            clearInterval(pollInterval);
+            clearInterval(timerInterval);
             setJobId(null);
             alert("Lost track of this job (the server may have restarted). Please try again.");
             return;
@@ -159,17 +186,21 @@ export default function Dashboard() {
         }
 
         if (Date.now() - startedAt > MAX_WAIT_MS) {
-          clearInterval(interval);
+          clearInterval(pollInterval);
+          clearInterval(timerInterval);
           setJobId(null);
           alert("This is taking much longer than expected. Please try again.");
         }
       } catch (e) { /* silent */ }
-    }, 500);
+    }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(pollInterval);
+      clearInterval(timerInterval);
+    };
   }, [jobId]);
 
-  const percent = progress.total > 0 ? (progress.done / progress.total) * 100 : 0;
+  const percent = progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : (progress.phase === "enriching" ? 50 : 15);
 
   /* ================= ANIMATION VARIANTS ================= */
   const containerVars = {
@@ -266,34 +297,34 @@ export default function Dashboard() {
             </button>
           </motion.div>
 
-          {/* PROGRESS INDICATOR */}
+          {/* PROGRESS INDICATOR WITH LIVE TIMER & AUTO-RELOAD */}
           <AnimatePresence>
             {jobId && (
               <motion.div 
                 initial={{ opacity: 0, y: -20 }} 
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
-                className="mb-8 p-6 glass rounded-2xl relative overflow-hidden"
+                className="mb-8 p-6 glass rounded-2xl relative overflow-hidden shadow-[0_0_30px_rgba(99,102,241,0.15)] border border-indigo-500/30"
               >
                 <div className="flex justify-between items-center mb-3 text-sm font-medium">
-                  <div className="flex items-center gap-2 text-indigo-300">
-                     <RefreshCw size={16} className="animate-spin" />
+                  <div className="flex items-center gap-2.5 text-indigo-200 font-semibold">
+                     <RefreshCw size={18} className="animate-spin text-indigo-400" />
                      {progress.phase === "enriching" 
-                        ? "AI Extraction & Finalizing Insights..." 
-                        : "Scanning Area & Analyzing Maps..."}
+                        ? `AI Enriching Insights (${formatTimer(elapsedSeconds)})` 
+                        : `Scanning Google Maps & Extracting Leads (${formatTimer(elapsedSeconds)})`}
                   </div>
-                  {progress.phase !== "enriching" && (
-                    <div className="text-gray-300 font-mono">
-                      {progress.done} / {progress.total}
-                    </div>
-                  )}
+                  <div className="text-gray-200 font-mono bg-white/10 px-3 py-1 rounded-lg text-xs border border-white/10">
+                    {progress.phase === "enriching"
+                      ? `Enriched ${progress.done} / ${progress.total || '?'}`
+                      : `Scraped ${progress.done} / ${progress.total || '?'}`}
+                  </div>
                 </div>
 
-                <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden border border-white/5 relative">
+                <div className="w-full h-2.5 bg-black/50 rounded-full overflow-hidden border border-white/10 relative">
                   <motion.div
-                    className="absolute top-0 left-0 bottom-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 bg-[length:200%_auto] animate-[animatedgradient_2s_linear_infinite]"
+                    className="absolute top-0 left-0 bottom-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-400 bg-[length:200%_auto] animate-[animatedgradient_2s_linear_infinite]"
                     initial={{ width: 0 }}
-                    animate={{ width: progress.phase === "enriching" ? "100%" : `${percent}%` }}
+                    animate={{ width: `${percent}%` }}
                     transition={{ ease: "easeOut", duration: 0.5 }}
                   />
                 </div>

@@ -470,7 +470,7 @@ async function runScraperJobInner(query, jobId) {
     console.log(`${getTS()} [STEP 6] Scrolling results feed to collect place links...`);
     let links = [];
     let noNewLinksCount = 0;
-    const TARGET_COUNT = Number(process.env.MAX_LEADS) || 35;
+    const TARGET_COUNT = 10;
 
     for (let i = 0; i < 50; i++) {
       const currentCount = links.length;
