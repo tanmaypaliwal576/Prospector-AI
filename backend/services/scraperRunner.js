@@ -1,4 +1,5 @@
 import fs from "fs";
+import v8 from "v8";
 import { addExtra } from "puppeteer-extra";
 import puppeteerCore from "puppeteer-core";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -18,13 +19,17 @@ const stealth = StealthPlugin();
   "chrome.app", "chrome.csi", "chrome.loadTimes", "chrome.runtime", "media.codecs",
   "navigator.hardwareConcurrency", "navigator.languages", "navigator.permissions",
   "navigator.plugins", "iframe.contentWindow", "sourceurl", "webgl.vendor",
-  "window.outerdimensions", "user-agent-override"
+  "window.outerdimensions", "user-agent-override", "navigator.webdriver"
 ].forEach(name => stealth.enabledEvasions.delete(name));
 puppeteer.use(stealth);
 
 process.on("unhandledRejection", (reason) => {
   console.error("🔥 [scraperRunner] Unhandled rejection (contained):", reason?.message || reason);
 });
+
+function getTS() {
+  return `[TS: ${new Date().toISOString().split("T")[1].slice(0, 12)}]`;
+}
 
 function withTimeout(promise, ms, label) {
   let timer;
@@ -66,9 +71,9 @@ async function getBrowserLaunchOptions() {
         "--disable-renderer-backgrounding",
         "--disable-default-apps",
         "--mute-audio",
-        "--single-process"
+        "--disable-blink-features=AutomationControlled"
       ],
-      protocolTimeout: 45000
+      protocolTimeout: 60000
     };
   }
 
@@ -85,16 +90,16 @@ async function getBrowserLaunchOptions() {
       "--disable-renderer-backgrounding",
       "--disable-default-apps",
       "--mute-audio",
-      "--single-process",
       "--disable-sync",
       "--disable-translate",
       "--metrics-recording-only",
-      "--no-first-run"
+      "--no-first-run",
+      "--disable-blink-features=AutomationControlled"
     ],
     defaultViewport: chromium.defaultViewport,
     executablePath: await chromium.executablePath(),
     headless: chromium.headless,
-    protocolTimeout: 45000
+    protocolTimeout: 60000
   };
 }
 
@@ -112,36 +117,182 @@ async function blockHeavyResources(page) {
 
 async function safeClosePage(page) {
   if (!page) return;
+  console.log(`${getTS()} safeClosePage() initiated...`);
   try {
     page.removeAllListeners("request");
+    page.removeAllListeners("error");
+    page.removeAllListeners("pageerror");
     await page.close().catch(() => {});
-  } catch (e) {}
+    console.log(`${getTS()} safeClosePage() completed.`);
+  } catch (e) {
+    console.log(`${getTS()} safeClosePage() error: ${e.message}`);
+  }
 }
 
-async function createWorkerPage(browser) {
-  const p = await withTimeout(browser.newPage(), 15000, "Worker newPage");
-  await p.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-  await p.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
-  await blockHeavyResources(p);
-  p.setDefaultNavigationTimeout(25000);
-  p.setDefaultTimeout(10000);
-  return p;
+/**
+ * PRODUCTION-HARDENED BROWSER MANAGER WITH SINGLE RECYCLER ELECTION
+ */
+class BrowserManager {
+  constructor() {
+    this.browser = null;
+    this.epoch = 0;
+    this.recentFailures = [];
+    this.createMutex = Promise.resolve();
+    this.totalProcessed = 0;
+    this.recycleRequested = false;
+    this.recycleInProgress = false;
+  }
+
+  async launch() {
+    console.log(`${getTS()} BrowserManager.launch() initiated...`);
+    const launchOpts = await getBrowserLaunchOptions();
+    this.browser = await withTimeout(puppeteer.launch(launchOpts), 60000, "Browser launch");
+    this.recentFailures = [];
+    this.epoch++;
+    console.log(`${getTS()} BrowserManager.launch() completed successfully (Epoch: ${this.epoch}).`);
+    return this.browser;
+  }
+
+  tryBecomeRecycler() {
+    if (this.recycleRequested && !this.recycleInProgress) {
+      this.recycleInProgress = true;
+      return true;
+    }
+    return false;
+  }
+
+  async isHealthy() {
+    if (!this.browser || !this.browser.isConnected()) return false;
+    try {
+      await withTimeout(this.browser.version(), 3000, "CDP Health Check Version");
+      await withTimeout(this.browser.pages(), 3000, "CDP Health Check Pages");
+      return true;
+    } catch (e) {
+      console.log(`${getTS()} ⚠️ CDP Health Check failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  async createPage(workerId) {
+    const release = await this.acquireMutex();
+    try {
+      console.log(`${getTS()} [WORKER #${workerId}] BrowserManager.createPage() requested...`);
+      
+      const healthy = await this.isHealthy();
+      if (!healthy) {
+        console.log(`${getTS()} [WORKER #${workerId}] Browser unhealthy. Triggering restart...`);
+        await this.restartInner();
+      }
+
+      await new Promise(r => setTimeout(r, 500));
+
+      const page = await withTimeout(this.browser.newPage(), 45000, `Worker-${workerId} newPage`);
+      console.log(`${getTS()} [WORKER #${workerId}] BrowserManager.createPage() succeeded.`);
+
+      await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+      await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+      await blockHeavyResources(page);
+      page.setDefaultNavigationTimeout(25000);
+      page.setDefaultTimeout(10000);
+      return { page, epoch: this.epoch };
+
+    } catch (err) {
+      console.error(`${getTS()} ❌ [WORKER #${workerId}] createPage failed: ${err.message}`);
+      await this.restartInner();
+      const freshPage = await withTimeout(this.browser.newPage(), 45000, `Worker-${workerId} newPage-Retry`);
+      await freshPage.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+      await freshPage.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+      await blockHeavyResources(freshPage);
+      freshPage.setDefaultNavigationTimeout(25000);
+      freshPage.setDefaultTimeout(10000);
+      return { page: freshPage, epoch: this.epoch };
+    } finally {
+      release();
+    }
+  }
+
+  async acquireMutex() {
+    let release;
+    const nextMutex = new Promise(resolve => {
+      release = resolve;
+    });
+    const currentMutex = this.createMutex;
+    this.createMutex = currentMutex.then(() => nextMutex);
+    await currentMutex;
+    return release;
+  }
+
+  async incrementProcessedAndCheckRecycle() {
+    this.totalProcessed++;
+    if (this.totalProcessed >= 50) {
+      console.log(`${getTS()} 🔄 Proactive browser recycling requested after ${this.totalProcessed} items.`);
+      this.recycleRequested = true;
+    }
+  }
+
+  async recordFailureAndCheckRestart() {
+    const now = Date.now();
+    this.recentFailures = this.recentFailures.filter(t => now - t < 30000);
+    this.recentFailures.push(now);
+    if (this.recentFailures.length >= 3) {
+      console.log(`${getTS()} ⚠️ [BROWSER MANAGER] ${this.recentFailures.length} failures within 30s. Restarting browser...`);
+      await this.restart();
+      return true;
+    }
+    return false;
+  }
+
+  async restart() {
+    const release = await this.acquireMutex();
+    try {
+      await this.restartInner();
+    } finally {
+      release();
+    }
+  }
+
+  async restartInner() {
+    console.log(`${getTS()} BrowserManager.restart() initiated...`);
+    if (this.browser) {
+      try {
+        await this.browser.close().catch(() => {});
+      } catch (e) {}
+      this.browser = null;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+    await this.launch();
+    this.recycleRequested = false;
+    this.recycleInProgress = false;
+    this.totalProcessed = 0;
+    console.log(`${getTS()} ✨ BrowserManager.restart() completed (Epoch: ${this.epoch}).`);
+  }
+
+  async close() {
+    console.log(`${getTS()} BrowserManager.close() initiated...`);
+    if (this.browser) {
+      try {
+        await this.browser.close().catch(() => {});
+        console.log(`${getTS()} BrowserManager.close() completed.`);
+      } catch (e) {}
+      this.browser = null;
+    }
+  }
 }
 
 /* ============================================================
    ENRICH SINGLE LEAD
 ============================================================ */
 async function enrichSingleLead(lead, jobId, index, totalCount) {
-  console.log(`[ENRICH STEP 1] Starting lead ${index + 1}/${totalCount}: ${lead.website}`);
+  console.log(`${getTS()} [ENRICH STEP 1] Starting lead ${index + 1}/${totalCount}: ${lead.website}`);
   const startTime = Date.now();
   try {
     if (!lead || !lead.website || lead.status === "enriched") {
-      console.log(`[ENRICH STEP 2] Lead ${index + 1} already enriched or invalid. Skipping.`);
+      console.log(`${getTS()} [ENRICH STEP 2] Lead ${index + 1} already enriched or invalid. Skipping.`);
       return 0;
     }
 
     if (badDomains.some(d => lead.website.includes(d))) {
-      console.log(`[ENRICH STEP 3] Lead ${index + 1} is aggregator domain. Scoring directly.`);
+      console.log(`${getTS()} [ENRICH STEP 3] Lead ${index + 1} is aggregator domain. Scoring directly.`);
       const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, 0);
       await Lead.updateOne(
         { _id: lead._id },
@@ -150,7 +301,7 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
       return Date.now() - startTime;
     }
 
-    console.log(`[ENRICH STEP 4] Extracting text for lead ${index + 1}: ${lead.website}`);
+    console.log(`${getTS()} [ENRICH STEP 4] Extracting text for lead ${index + 1}: ${lead.website}`);
     let text;
     try {
       text = await lightExtract(lead.website);
@@ -158,12 +309,12 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
         text = await extractWebsiteText(lead.website);
       }
     } catch (extractErr) {
-      console.log(`[ENRICH STEP 5] Extraction failed for lead ${index + 1}: ${extractErr.message}`);
+      console.log(`${getTS()} [ENRICH STEP 5] Extraction failed for lead ${index + 1}: ${extractErr.message}`);
       return Date.now() - startTime;
     }
 
     if (!text || text.length < 1500) {
-      console.log(`[ENRICH STEP 6] Low text content (${text?.length || 0} chars) for lead ${index + 1}. Scoring manually.`);
+      console.log(`${getTS()} [ENRICH STEP 6] Low text content (${text?.length || 0} chars) for lead ${index + 1}. Scoring manually.`);
       const score = calculateLeadScore({ phone: lead.phone, website: lead.website }, text?.length || 0);
       await Lead.updateOne(
         { _id: lead._id },
@@ -173,7 +324,7 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
     }
 
     text = text.slice(0, 3000);
-    console.log(`[ENRICH STEP 7] Sending ${text.length} chars to Gemini AI for lead ${index + 1}...`);
+    console.log(`${getTS()} [ENRICH STEP 7] Sending ${text.length} chars to Gemini AI for lead ${index + 1}...`);
     const aiResults = await analyzeBatch([text]);
     const aiData = aiResults?.[0];
 
@@ -188,7 +339,7 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
       text.length
     );
 
-    console.log(`[ENRICH STEP 8] Gemini response received. Updating DB for lead ${index + 1} (Score: ${score})...`);
+    console.log(`${getTS()} [ENRICH STEP 8] Gemini response received. Updating DB for lead ${index + 1} (Score: ${score})...`);
     await Lead.updateOne(
       { _id: lead._id },
       {
@@ -205,11 +356,11 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
         }
       }
     );
-    console.log(`[ENRICH STEP 9] Lead ${index + 1}/${totalCount} successfully enriched.`);
+    console.log(`${getTS()} [ENRICH STEP 9] Lead ${index + 1}/${totalCount} successfully enriched.`);
     return Date.now() - startTime;
 
   } catch (err) {
-    console.error(`[ENRICH ERROR] Failed lead ${index + 1}:`, err.message);
+    console.error(`${getTS()} [ENRICH ERROR] Failed lead ${index + 1}:`, err.message);
     return Date.now() - startTime;
   } finally {
     jobStore.incEnrichDone(jobId);
@@ -221,12 +372,12 @@ async function enrichSingleLead(lead, jobId, index, totalCount) {
 ============================================================ */
 async function startBackgroundEnrichment(leadsToEnrich, jobId) {
   if (!leadsToEnrich || leadsToEnrich.length === 0) {
-    console.log("Enrichment Finished (0 leads to enrich)");
+    console.log(`${getTS()} Enrichment Finished (0 leads to enrich)`);
     jobStore.setPhase(jobId, "completed");
     return;
   }
 
-  console.log("Enrichment Started");
+  console.log(`${getTS()} Enrichment Started`);
   const ENRICH_CONCURRENCY = 3;
   const enrichStart = Date.now();
   const enrichDurations = [];
@@ -238,7 +389,7 @@ async function startBackgroundEnrichment(leadsToEnrich, jobId) {
       if (idx >= leadsToEnrich.length) break;
 
       const lead = leadsToEnrich[idx];
-      console.log(`[ENRICH WORKER #${workerId}] Enriching lead ${idx + 1}/${leadsToEnrich.length}: ${lead.website}`);
+      console.log(`${getTS()} [ENRICH WORKER #${workerId}] Enriching lead ${idx + 1}/${leadsToEnrich.length}: ${lead.website}`);
       const dur = await enrichSingleLead(lead, jobId, idx, leadsToEnrich.length);
       if (dur > 0) enrichDurations.push(dur);
     }
@@ -249,8 +400,8 @@ async function startBackgroundEnrichment(leadsToEnrich, jobId) {
   );
 
   const avgGeminiTime = enrichDurations.length ? Math.round(enrichDurations.reduce((a, b) => a + b, 0) / enrichDurations.length) : 0;
-  console.log(`Average Gemini Time: ${avgGeminiTime} ms`);
-  console.log("Enrichment Finished");
+  console.log(`${getTS()} Average Gemini Time: ${avgGeminiTime} ms`);
+  console.log(`${getTS()} Enrichment Finished`);
   jobStore.setPhase(jobId, "completed");
 }
 
@@ -262,51 +413,47 @@ export async function runScraperJob(query, jobId) {
   try {
     await withTimeout(runScraperJobInner(query, jobId), MASTER_TIMEOUT_MS, "Scraper job");
   } catch (err) {
-    console.error("❌ [SCRAPER JOB FAILED/TIMED OUT]:", err.message);
+    console.error(`${getTS()} ❌ [SCRAPER JOB FAILED/TIMED OUT]:`, err.message);
     jobStore.setError(jobId, err.message);
   }
 }
 
 async function runScraperJobInner(query, jobId) {
-  let browser;
+  const browserMgr = new BrowserManager();
   const scrapeStartTime = Date.now();
 
   try {
-    console.log("Scrape Started");
+    console.log(`${getTS()} Scrape Started`);
     console.log(`\n========================================`);
-    console.log(`[STEP 1] Starting Scraper Job for query: "${query}" (ID: ${jobId})`);
+    console.log(`${getTS()} [STEP 1] Starting Scraper Job for query: "${query}" (ID: ${jobId})`);
     console.log(`========================================`);
 
     let user = await User.findOne({ username: "admin" });
     if (!user) {
-      console.log("[STEP 1.1] Admin user not found. Creating default admin user.");
+      console.log(`${getTS()} [STEP 1.1] Admin user not found. Creating default admin user.`);
       user = await User.create({ username: "admin", credits: 100 });
     }
 
     if (user.credits <= 0) {
-      console.log("❌ [STEP 1.2] Admin out of credits. Halting job.");
+      console.log(`${getTS()} ❌ [STEP 1.2] Admin out of credits. Halting job.`);
       jobStore.setPhase(jobId, "completed");
       return;
     }
 
-    console.log("[STEP 2] Launching Chromium browser instance with Render-optimized flags...");
-    const launchOpts = await getBrowserLaunchOptions();
-    browser = await withTimeout(puppeteer.launch(launchOpts), 30000, "Browser launch");
-    console.log("[STEP 2.1] Chromium browser launched successfully.");
+    console.log(`${getTS()} [STEP 2] Launching Chromium browser instance with Render-optimized flags...`);
+    await browserMgr.launch();
+    console.log(`${getTS()} [STEP 2.1] Chromium browser launched successfully.`);
 
-    console.log("[STEP 3] Opening main browser tab...");
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-    await page.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
-    await blockHeavyResources(page);
+    console.log(`${getTS()} [STEP 3] Opening main browser tab...`);
+    const { page } = await browserMgr.createPage(0);
 
     const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en`;
-    console.log(`[STEP 4] Navigating to Google Maps search: ${searchUrl}`);
+    console.log(`${getTS()} [STEP 4] Navigating to Google Maps search: ${searchUrl}`);
     await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
-    console.log("[STEP 4.1] Google Maps page loaded.");
+    console.log(`${getTS()} [STEP 4.1] Google Maps page loaded.`);
 
     if (page.url().includes("consent.google.com")) {
-      console.log("[STEP 4.2] Bypassing Google Consent page...");
+      console.log(`${getTS()} [STEP 4.2] Bypassing Google Consent page...`);
       await page.evaluate(() => {
         const btns = Array.from(document.querySelectorAll('button'));
         const acceptBtn = btns.find(b => b.textContent.includes('Accept all') || b.textContent.includes('I agree'));
@@ -315,15 +462,15 @@ async function runScraperJobInner(query, jobId) {
       await new Promise(r => setTimeout(r, 700));
     }
 
-    console.log("[STEP 5] Waiting for Google Maps place link selectors...");
+    console.log(`${getTS()} [STEP 5] Waiting for Google Maps place link selectors...`);
     await page.waitForSelector("a[href*='/maps/place'], a.hfpxzc", { timeout: 15000 }).catch(() => {
-      console.log("[STEP 5.1] Initial selector wait timed out, continuing scroll search...");
+      console.log(`${getTS()} [STEP 5.1] Initial selector wait timed out, continuing scroll search...`);
     });
 
-    console.log("[STEP 6] Scrolling results feed to collect place links...");
+    console.log(`${getTS()} [STEP 6] Scrolling results feed to collect place links...`);
     let links = [];
     let noNewLinksCount = 0;
-    const TARGET_COUNT = 10;
+    const TARGET_COUNT = Number(process.env.MAX_LEADS) || 35;
 
     for (let i = 0; i < 50; i++) {
       const currentCount = links.length;
@@ -353,14 +500,14 @@ async function runScraperJobInner(query, jobId) {
 
       if (links.length >= TARGET_COUNT) {
         links = links.slice(0, TARGET_COUNT);
-        console.log(`[STEP 6.1] Target link count reached (${links.length}). Stopping scroll loop.`);
+        console.log(`${getTS()} [STEP 6.1] Target link count reached (${links.length}). Stopping scroll loop.`);
         break;
       }
 
       if (links.length === currentCount) {
         noNewLinksCount++;
         if (noNewLinksCount > 5) {
-          console.log(`[STEP 6.2] End of results feed reached at ${links.length} links.`);
+          console.log(`${getTS()} [STEP 6.2] End of results feed reached at ${links.length} links.`);
           break;
         }
       } else {
@@ -369,11 +516,11 @@ async function runScraperJobInner(query, jobId) {
     }
 
     links = links.slice(0, TARGET_COUNT);
-    console.log(`[STEP 7] Final place links collected: ${links.length}`);
+    console.log(`${getTS()} [STEP 7] Final place links collected: ${links.length}`);
     jobStore.setScrapeTotal(jobId, links.length);
 
     if (links.length === 0) {
-      console.log("[STEP 7.1] No place links extracted. Job complete.");
+      console.log(`${getTS()} [STEP 7.1] No place links extracted. Job complete.`);
       jobStore.setPhase(jobId, "completed");
       return;
     }
@@ -381,10 +528,10 @@ async function runScraperJobInner(query, jobId) {
     await safeClosePage(page);
 
     // ============================================================
-    // 1 & 2. WORKER POOL (4 WORKERS) WITH INDEX-BASED QUEUE
+    // WORKER POOL CONCURRENCY = 2 WITH SINGLE RECYCLER ELECTION
     // ============================================================
-    const WORKER_COUNT = 4;
-    console.log(`[STEP 8] Initializing Worker Pool of ${WORKER_COUNT} reusable detail pages...`);
+    const WORKER_COUNT = 2;
+    console.log(`${getTS()} [STEP 8] Initializing Worker Pool of ${WORKER_COUNT} reusable detail pages...`);
 
     let queueIndex = 0;
     let availableCredits = user.credits;
@@ -393,24 +540,84 @@ async function runScraperJobInner(query, jobId) {
     const extractionTimes = [];
     const workerIdleTimes = [];
 
-    const workers = await Promise.all(
-      Array.from({ length: WORKER_COUNT }, async (_, id) => {
-        const workerPage = await createWorkerPage(browser);
-        return {
-          id: id + 1,
-          page: workerPage,
-          itemsProcessed: 0,
-          busyTime: 0,
-          idleStart: Date.now()
-        };
-      })
-    );
+    function setupPageCrashListeners(worker) {
+      if (!worker.page) return;
+      worker.page.on("error", () => {
+        console.log(`${getTS()} [WORKER #${worker.id}] Page crash detected via error event.`);
+        worker.crashed = true;
+      });
+      worker.page.on("pageerror", () => {
+        console.log(`${getTS()} [WORKER #${worker.id}] Page error event detected.`);
+      });
+    }
+
+    const workers = [];
+    for (let id = 1; id <= WORKER_COUNT; id++) {
+      const { page: workerPage, epoch } = await browserMgr.createPage(id);
+      const wObj = {
+        id,
+        page: workerPage,
+        epoch,
+        itemsProcessed: 0,
+        busyTime: 0,
+        idleStart: Date.now(),
+        failCount: 0,
+        crashed: false,
+        active: false
+      };
+      setupPageCrashListeners(wObj);
+      workers.push(wObj);
+      await new Promise(r => setTimeout(r, 300));
+    }
 
     async function runWorker(worker) {
       while (true) {
         if (availableCredits <= 0) break;
 
-        // O(1) Index-based queue pointer instead of array.shift()
+        // V8 Heap Statistics Memory Monitor
+        if (queueIndex % 10 === 0) {
+          const heapStats = v8.getHeapStatistics();
+          const heapUsedMB = (heapStats.used_heap_size / 1024 / 1024).toFixed(2);
+          const heapLimitMB = (heapStats.heap_size_limit / 1024 / 1024).toFixed(2);
+          const ratio = heapStats.used_heap_size / heapStats.heap_size_limit;
+          console.log(`${getTS()} 🧠 [V8 MEMORY MONITOR] Heap Used: ${heapUsedMB} MB / Limit: ${heapLimitMB} MB (${(ratio * 100).toFixed(1)}%)`);
+          if (ratio > 0.80) {
+            console.log(`${getTS()} ⚠️ Heap usage > 80%. Flagging graceful proactive recycle...`);
+            browserMgr.recycleRequested = true;
+          }
+        }
+
+        // Single Recycler Election Architecture
+        if (browserMgr.recycleRequested) {
+          worker.active = false;
+
+          if (browserMgr.tryBecomeRecycler()) {
+            console.log(`${getTS()} 👑 [WORKER #${worker.id}] Elected as Single Recycler. Waiting for all workers to become idle...`);
+            while (workers.some(w => w.active)) {
+              await new Promise(r => setTimeout(r, 100));
+            }
+            console.log(`${getTS()} 👑 [WORKER #${worker.id}] All workers idle. Restarting browser...`);
+            await browserMgr.restart();
+          } else {
+            console.log(`${getTS()} [WORKER #${worker.id}] Waiting for elected recycler to complete browser restart...`);
+            while (browserMgr.recycleInProgress) {
+              await new Promise(r => setTimeout(r, 100));
+            }
+          }
+        }
+
+        // Resynchronize worker if crashed or browser epoch changed
+        if (worker.crashed || worker.epoch !== browserMgr.epoch) {
+          console.log(`${getTS()} [WORKER #${worker.id}] Resynchronizing crashed/outdated page with Browser Epoch ${browserMgr.epoch}...`);
+          await safeClosePage(worker.page);
+          const fresh = await browserMgr.createPage(worker.id);
+          worker.page = fresh.page;
+          worker.epoch = fresh.epoch;
+          worker.itemsProcessed = 0;
+          worker.crashed = false;
+          setupPageCrashListeners(worker);
+        }
+
         let currentIndex;
         if (queueIndex >= links.length) break;
         currentIndex = queueIndex++;
@@ -418,18 +625,23 @@ async function runScraperJobInner(query, jobId) {
         const link = links[currentIndex];
         if (!link) break;
 
+        worker.active = true;
         const idleDuration = Date.now() - worker.idleStart;
         workerIdleTimes.push(idleDuration);
 
         // Periodic Page Refresh every 15 items
         if (worker.itemsProcessed >= 15) {
-          console.log(`[WORKER #${worker.id}] Refreshing worker page after 15 items...`);
+          console.log(`${getTS()} [WORKER #${worker.id}] Refreshing worker page after 15 items...`);
           await safeClosePage(worker.page);
-          worker.page = await createWorkerPage(browser);
+          const fresh = await browserMgr.createPage(worker.id);
+          worker.page = fresh.page;
+          worker.epoch = fresh.epoch;
           worker.itemsProcessed = 0;
+          worker.crashed = false;
+          setupPageCrashListeners(worker);
         }
 
-        console.log(`[WORKER #${worker.id}] Processing link ${currentIndex + 1}/${links.length}`);
+        console.log(`${getTS()} [WORKER #${worker.id}] Processing link ${currentIndex + 1}/${links.length}`);
         const navStart = Date.now();
 
         try {
@@ -442,29 +654,39 @@ async function runScraperJobInner(query, jobId) {
               break;
             } catch (navErr) {
               if (attempt === 2) {
-                console.log(`[WORKER #${worker.id}] Navigation failed after retry for link ${currentIndex + 1}: ${navErr.message}`);
-                // Error Recovery: Restart crashed worker page automatically
-                console.log(`Worker Restarted (Worker #${worker.id})`);
+                console.log(`${getTS()} [WORKER #${worker.id}] Navigation failed for link ${currentIndex + 1}: ${navErr.message}`);
+                worker.failCount++;
+
+                await browserMgr.recordFailureAndCheckRestart();
+                
+                const backoffMs = Math.min(1000 * Math.pow(2, worker.failCount), 8000);
+                await new Promise(r => setTimeout(r, backoffMs));
+
+                console.log(`${getTS()} Worker Restarted (Worker #${worker.id})`);
                 await safeClosePage(worker.page);
-                worker.page = await createWorkerPage(browser);
+                const fresh = await browserMgr.createPage(worker.id);
+                worker.page = fresh.page;
+                worker.epoch = fresh.epoch;
                 worker.itemsProcessed = 0;
+                worker.crashed = false;
+                setupPageCrashListeners(worker);
               }
             }
           }
 
           const navDuration = Date.now() - navStart;
           pageLoadTimes.push(navDuration);
-          console.log(`[WORKER #${worker.id}] Page loaded in ${navDuration} ms for link ${currentIndex + 1}`);
+          console.log(`${getTS()} [WORKER #${worker.id}] Page loaded in ${navDuration} ms for link ${currentIndex + 1}`);
 
           if (!navSuccess) {
             jobStore.incScrapeDone(jobId);
             worker.idleStart = Date.now();
+            worker.active = false;
             continue;
           }
 
           const extractStart = Date.now();
 
-          // Single page.evaluate() call for fast DOM extraction
           const data = await worker.page.evaluate(() => {
             const h1 = document.querySelector('h1');
             if (!h1 || !h1.innerText.trim()) return null;
@@ -490,7 +712,7 @@ async function runScraperJobInner(query, jobId) {
 
           const extractDuration = Date.now() - extractStart;
           extractionTimes.push(extractDuration);
-          console.log(`[WORKER #${worker.id}] Extraction completed in ${extractDuration} ms for link ${currentIndex + 1}`);
+          console.log(`${getTS()} [WORKER #${worker.id}] Extraction completed in ${extractDuration} ms for link ${currentIndex + 1}`);
 
           if (data && data.name) {
             extractedResults.push({ ...data, sourceQuery: query });
@@ -502,34 +724,46 @@ async function runScraperJobInner(query, jobId) {
           worker.itemsProcessed++;
           worker.busyTime += (navDuration + extractDuration);
 
+          await browserMgr.incrementProcessedAndCheckRecycle();
+
         } catch (err) {
-          console.log(`[WORKER #${worker.id}] Error processing link ${currentIndex + 1}: ${err.message}`);
-          console.log(`Worker Restarted (Worker #${worker.id})`);
+          console.log(`${getTS()} [WORKER #${worker.id}] Error processing link ${currentIndex + 1}: ${err.message}`);
+          worker.failCount++;
+          await browserMgr.recordFailureAndCheckRestart();
+          
+          const backoffMs = Math.min(1000 * Math.pow(2, worker.failCount), 8000);
+          await new Promise(r => setTimeout(r, backoffMs));
+
+          console.log(`${getTS()} Worker Restarted (Worker #${worker.id})`);
           await safeClosePage(worker.page);
-          worker.page = await createWorkerPage(browser);
+          const fresh = await browserMgr.createPage(worker.id);
+          worker.page = fresh.page;
+          worker.epoch = fresh.epoch;
           worker.itemsProcessed = 0;
+          worker.crashed = false;
+          setupPageCrashListeners(worker);
         } finally {
           jobStore.incScrapeDone(jobId);
           worker.idleStart = Date.now();
+          worker.active = false;
         }
       }
-      console.log(`[WORKER #${worker.id}] Finished all assigned work.`);
+      console.log(`${getTS()} [WORKER #${worker.id}] Finished all assigned work.`);
     }
 
     await Promise.all(workers.map(w => runWorker(w)));
 
-    // Safely close all worker pages
     await Promise.all(workers.map(w => safeClosePage(w.page)));
 
     // ============================================================
-    // 3, 4 & 7. BULK WRITE ({ ordered: false }) & SINGLE USER CREDIT DEDUCTION
+    // BULK WRITE & SINGLE CREDIT SAVING
     // ============================================================
     const dbWriteStart = Date.now();
     const leadsToEnrich = [];
     let dbWriteDuration = 0;
 
     if (extractedResults.length > 0) {
-      console.log(`[STEP 8.2] Preparing bulkWrite for ${extractedResults.length} extracted leads...`);
+      console.log(`${getTS()} [STEP 8.2] Preparing bulkWrite for ${extractedResults.length} extracted leads...`);
       const bulkOps = extractedResults.map((item) => {
         if (item.website) {
           return {
@@ -557,29 +791,26 @@ async function runScraperJobInner(query, jobId) {
 
       const bulkResult = await Lead.bulkWrite(bulkOps, { ordered: false });
       dbWriteDuration = Date.now() - dbWriteStart;
-      console.log(`[STEP 8.3] Lead.bulkWrite completed in ${dbWriteDuration} ms (Inserted: ${bulkResult.insertedCount || 0}, Upserted: ${bulkResult.upsertedCount || 0}, Modified: ${bulkResult.modifiedCount || 0}).`);
+      console.log(`${getTS()} [STEP 8.3] Lead.bulkWrite completed in ${dbWriteDuration} ms (Inserted: ${bulkResult.insertedCount || 0}, Upserted: ${bulkResult.upsertedCount || 0}, Modified: ${bulkResult.modifiedCount || 0}).`);
 
-      // Avoid extra MongoDB Lead.find() by directly filtering extracted results with websites
       const validResults = extractedResults.filter(r => r.website);
       if (validResults.length > 0) {
         const deductAmount = validResults.length;
         if (user.credits >= deductAmount) {
           user.credits -= deductAmount;
-          await user.save(); // SAVE USER CREDITS ONCE
-          console.log(`[STEP 8.4] Single credit deduction completed (${deductAmount} credits deducted). Remaining: ${user.credits}`);
+          await user.save();
+          console.log(`${getTS()} [STEP 8.4] Single credit deduction completed (${deductAmount} credits deducted). Remaining: ${user.credits}`);
         }
 
-        // Fetch created/upserted leads for enrichment
         const validWebsites = validResults.map(r => r.website);
         const savedLeads = await Lead.find({ website: { $in: validWebsites } }).lean();
         leadsToEnrich.push(...savedLeads);
       }
     }
 
-    console.log("[STEP 9] Closing Google Maps Puppeteer browser instance...");
-    await browser.close().catch(() => {});
-    browser = null;
-    console.log("[STEP 9.1] Google Maps browser closed cleanly.");
+    console.log(`${getTS()} [STEP 9] Closing Google Maps Puppeteer browser instance...`);
+    await browserMgr.close();
+    console.log(`${getTS()} [STEP 9.1] Google Maps browser closed cleanly.`);
 
     const totalScrapeDuration = Date.now() - scrapeStartTime;
     const avgNavigation = pageLoadTimes.length ? Math.round(pageLoadTimes.reduce((a, b) => a + b, 0) / pageLoadTimes.length) : 0;
@@ -590,7 +821,7 @@ async function runScraperJobInner(query, jobId) {
     const workerIdlePercent = (100 - parseFloat(workerBusyPercent)).toFixed(1);
     const peakMemoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
 
-    console.log("Scrape Finished");
+    console.log(`${getTS()} Scrape Finished`);
     console.log(`\n========================================`);
     console.log(`📊 SCRAPE PERFORMANCE METRICS:`);
     console.log(`- Total Runtime: ${totalScrapeDuration} ms`);
@@ -603,27 +834,21 @@ async function runScraperJobInner(query, jobId) {
     console.log(`- Peak Memory Usage: ${peakMemoryUsage} MB`);
     console.log(`========================================\n`);
 
-    // ============================================================
-    // 1. TRUE BACKGROUND ENRICHMENT (IMMEDIATE FRONTEND UNBLOCK)
-    // ============================================================
-    console.log("[STEP 9.2] Scraping complete. Returning control immediately to frontend.");
+    console.log(`${getTS()} [STEP 9.2] Scraping complete. Returning control immediately to frontend.`);
     jobStore.setPhase(jobId, "enriching");
 
-    // Launch background enrichment WITHOUT awaiting it
     setImmediate(() => {
       startBackgroundEnrichment(leadsToEnrich, jobId).catch((err) => {
-        console.error("❌ Background enrichment failed:", err);
+        console.error(`${getTS()} ❌ Background enrichment failed:`, err);
         jobStore.setPhase(jobId, "completed");
       });
     });
 
   } catch (err) {
-    console.error("❌ [SCRAPER FATAL ERROR]:", err);
+    console.error(`${getTS()} ❌ [SCRAPER FATAL ERROR]:`, err);
     jobStore.setError(jobId, err.message || "Scraper failed");
     throw err;
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
+    await browserMgr.close();
   }
 }
