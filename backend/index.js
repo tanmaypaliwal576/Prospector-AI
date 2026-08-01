@@ -54,6 +54,16 @@ app.get("/", (req, res) => {
   res.send("🚀 ProspectMiner AI Backend Running");
 });
 
+/* Health Check Route */
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "OK",
+    message: "Backend is healthy",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 /* 404 Handler */
 app.use((req, res) => {
   res.status(404).json({ message: "Route Not Found" });
